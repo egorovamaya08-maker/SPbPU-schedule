@@ -201,7 +201,40 @@ def parse_place(place_element):
     parts = [p.strip() for p in text.split(',') if p.strip()]
     return ', '.join(dict.fromkeys(parts))
 
+def parse_ruz_date_to_date(date_text: str, year: int = 2026) -> date | None:
+    """
+    Парсит дату РУЗ в обоих форматах:
+    - '18 мая, пн'
+    - '10 мар., вт'
+    Возвращает date или None.
+    """
+    if not date_text:
+        return None
+    try:
+        s = str(date_text).lower().strip().split(",")[0].strip()
+        parts = s.split()
+        if len(parts) < 2:
+            return None
+        day = int(parts[0])
+        month_raw = parts[1].rstrip(".")  # убираем точку у 'мар.'
 
+        months = {
+            # полные
+            "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
+            "мая": 5, "июня": 6, "июля": 7, "августа": 8,
+            "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
+            # сокращённые
+            "янв": 1, "фев": 2, "мар": 3, "апр": 4,
+            "май": 5, "июн": 6, "июл": 7, "авг": 8,
+            "сен": 9, "окт": 10, "ноя": 11, "дек": 12,
+        }
+        month = months.get(month_raw)
+        if not month:
+            return None
+        return date(year, month, day)
+    except Exception:
+        return None
+        
 def parse_group_schedule(group_human: str, start_date: datetime, end_date: datetime):
     if group_human not in GROUP_MAP:
         st.error(f"Группа {group_human} не найдена.")
@@ -229,19 +262,18 @@ def parse_group_schedule(group_human: str, start_date: datetime, end_date: datet
                     if not date_elem:
                         continue
                     date_text = date_elem.text.strip()
+                 
+
                     try:
-                        # Адаптируем разбор для парсера
-                        s_date = date_text.lower().strip().split(',')[0].strip().split()
-                        months_map = {'января':1, 'февраля':2, 'марта':3, 'апреля':4, 'мая':5, 'июня':6, 'июля':7, 'августа':8, 'сентября':9, 'октября':10, 'ноября':11, 'декабря':12}
-                        
-                        # Собираем date объект с 2026 годом
-                        lesson_date = date(2026, months_map[s_date[1]], int(s_date[0]))
-                        
-                        # Сравниваем типы date с date (теперь без ошибок!)
-                        if lesson_date < start_date or lesson_date > end_date:
+                        lesson_date = parse_ruz_date_to_date(date_text, year=2026)
+                        if lesson_date is None:
                             continue
-                    except Exception as e:
-                        # Если дата не распарсилась, пропускаем её safe-модом
+                        # нормализуем границы к date, чтобы не было TypeError
+                        s = start_date.date() if isinstance(start_date, datetime) else start_date
+                        e = end_date.date() if isinstance(end_date, datetime) else end_date
+                        if lesson_date < s or lesson_date > e:
+                            continue
+                    except Exception:
                         continue
                     
                    
@@ -310,12 +342,15 @@ def parse_teacher_schedule(teacher_name: str, start_date: datetime, end_date: da
                     if not date_elem:
                         continue
                     date_text = date_elem.text.strip()
+                    
                     try:
                         lesson_date = datetime.strptime(date_text, "%d.%m.%Y")
                         if lesson_date < start_date or lesson_date > end_date:
                             continue
                     except:
                         pass
+                    
+                    
                     for lesson in day.find_all('li', class_='lesson'):
                         subject = ""
                         subject_elem = lesson.find('div', class_='lesson__subject')
@@ -489,7 +524,56 @@ def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
 
     return result
 
+def prepare_sorted_raw_sheets(combined_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Готовит два DataFrame для Excel:
+    - groups_sheet: только данные групп, сортировка Группа → Дата → Время
+    - teachers_sheet: только данные преподавателей, сортировка Преподаватель → Дата → Время
+    """
+    if combined_df is None or combined_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
 
+    df = combined_df.copy()
+
+    # единый столбец даты для сортировки
+    df["_dt"] = df["Дата"].apply(lambda x: parse_ruz_date_to_date(x, 2026))
+
+    # ----- лист групп -----
+    if "Группа" in df.columns:
+        gdf = df[df["Группа"].notna() & (df["Группа"].astype(str).str.len() > 0)].copy()
+        # убираем строки, которые пришли только от преподавателя (там обычно есть "Группы")
+        if "Группы" in gdf.columns:
+            # оставляем строки, где Группа заполнена парсером группы
+            pass
+        gdf = gdf.dropna(subset=["_dt"]).sort_values(
+            by=["Группа", "_dt", "Время"], ascending=[True, True, True]
+        )
+        gdf = gdf.drop(columns=["_dt"], errors="ignore")
+        # порядок столбцов
+        preferred = ["Группа", "Дата", "Время", "Дисциплина", "Тип занятия", "Преподаватель", "Место"]
+        cols = [c for c in preferred if c in gdf.columns] + [c for c in gdf.columns if c not in preferred]
+        gdf = gdf[cols]
+    else:
+        gdf = pd.DataFrame()
+
+    # ----- лист преподавателей -----
+    if "Преподаватель" in df.columns:
+        tdf = df.copy()
+        # если есть "Группы" (из парсера преподавателя) — используем их
+        if "Группы" in tdf.columns and "Группа" not in tdf.columns:
+            tdf["Группа"] = tdf["Группы"]
+        tdf = tdf.dropna(subset=["_dt"]).sort_values(
+            by=["Преподаватель", "_dt", "Время"], ascending=[True, True, True]
+        )
+        tdf = tdf.drop(columns=["_dt"], errors="ignore")
+        preferred = ["Преподаватель", "Дата", "Время", "Дисциплина", "Тип занятия", "Группа", "Группы", "Место"]
+        cols = [c for c in preferred if c in tdf.columns] + [c for c in tdf.columns if c not in preferred]
+        tdf = tdf[cols]
+    else:
+        tdf = pd.DataFrame()
+
+    return gdf, tdf
+    
 def format_header(members: list[str]) -> str:
     short = []
     for m in members:
@@ -782,33 +866,35 @@ with tab5:
     st.subheader("📥 Массовая выгрузка расписаний")
     st.markdown("Выберите **несколько групп** и/или **несколько преподавателей**. Данные будут собраны в один Excel-файл.")
 
-    col_g, col_t = st.columns(2)
+    # инициализация session_state
+    if "mass_result" not in st.session_state:
+        st.session_state.mass_result = None
+    if "mass_excel" not in st.session_state:
+        st.session_state.mass_excel = None
 
+    col_g, col_t = st.columns(2)
     with col_g:
         st.markdown("**Группы**")
         selected_groups = st.multiselect(
             "Отметьте группы",
             options=sorted(GROUP_MAP.keys()),
-            default=[],
+            default=st.session_state.get("mass_selected_groups", []),
             key="multi_groups",
-            help="Можно выбрать любое количество групп"
         )
-
     with col_t:
         st.markdown("**Преподаватели**")
         selected_teachers = st.multiselect(
             "Отметьте преподавателей",
             options=sorted(TEACHER_MAP.keys()),
-            default=[],
+            default=st.session_state.get("mass_selected_teachers", []),
             key="multi_teachers",
-            help="Можно выбрать любое количество преподавателей"
         )
 
     col1, col2 = st.columns(2)
     with col1:
-        multi_start = st.date_input("Дата начала", datetime(2026, 2, 1), key="multi_start")
+        multi_start = st.date_input("Дата начала", datetime(2026, 2, 1).date(), key="multi_start")
     with col2:
-        multi_end = st.date_input("Дата окончания", datetime(2026, 5, 25), key="multi_end")
+        multi_end = st.date_input("Дата окончания", datetime(2026, 5, 25).date(), key="multi_end")
 
     st.caption(f"Выбрано: {len(selected_groups)} групп, {len(selected_teachers)} преподавателей")
 
@@ -816,13 +902,16 @@ with tab5:
         if not selected_groups and not selected_teachers:
             st.warning("Выберите хотя бы одну группу или одного преподавателя")
         else:
+            # запоминаем выбор
+            st.session_state.mass_selected_groups = selected_groups
+            st.session_state.mass_selected_teachers = selected_teachers
+
             all_dfs = []
             progress = st.progress(0)
             status = st.empty()
-            total = len(selected_groups) + len(selected_teachers)
+            total = max(len(selected_groups) + len(selected_teachers), 1)
             done = 0
 
-            # --- Группы ---
             for g in selected_groups:
                 status.info(f"Парсим группу: {g} …")
                 try:
@@ -831,13 +920,12 @@ with tab5:
                         all_dfs.append(df)
                         st.success(f"✅ {g}: {len(df)} занятий")
                     else:
-                        st.warning(f"⚠️ {g}: нет данных")
+                        st.warning(f"⚠️ {g}: нет данных за выбранный период")
                 except Exception as e:
                     st.error(f"❌ Ошибка группы {g}: {e}")
                 done += 1
                 progress.progress(done / total)
 
-            # --- Преподаватели ---
             for t in selected_teachers:
                 status.info(f"Парсим преподавателя: {t} …")
                 try:
@@ -846,7 +934,7 @@ with tab5:
                         all_dfs.append(df)
                         st.success(f"✅ {t}: {len(df)} занятий")
                     else:
-                        st.warning(f"⚠️ {t}: нет данных")
+                        st.warning(f"⚠️ {t}: нет данных за выбранный период")
                 except Exception as e:
                     st.error(f"❌ Ошибка преподавателя {t}: {e}")
                 done += 1
@@ -857,39 +945,54 @@ with tab5:
 
             if all_dfs:
                 combined = pd.concat(all_dfs, ignore_index=True)
+                st.session_state.mass_result = combined
                 st.session_state.schedule_data = {
                     f"Массовая выгрузка ({len(selected_groups)} гр. + {len(selected_teachers)} преп.)": combined
                 }
-                st.success(f"✅ Всего собрано {len(combined)} занятий")
 
-                # Показываем статистику
-                st.metric("Всего занятий", len(combined))
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.write("**По типам занятий:**")
-                    st.dataframe(combined["Тип занятия"].value_counts())
-                with col_b:
-                    st.write("**По преподавателям:**")
-                    st.dataframe(combined["Преподаватель"].value_counts())
-
-                # Excel
+                # готовим Excel сразу и кладём в session_state
+                groups_sheet, teachers_sheet = prepare_sorted_raw_sheets(combined)
                 export_df = prepare_export_dataframe(combined)
-                if not export_df.empty:
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                        export_df.to_excel(writer, sheet_name="Отчет", index=False)
-                        # Дополнительный лист с сырыми данными
-                        combined.to_excel(writer, sheet_name="Сырые данные", index=False)
-                    excel_data = output.getvalue()
 
-                    st.download_button(
-                        label="📥 Скачать Excel (все выбранные)",
-                        data=excel_data,
-                        file_name=f"mass_schedule_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-                else:
-                    st.warning("Не удалось сформировать отчёт для Excel")
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                    if not groups_sheet.empty:
+                        groups_sheet.to_excel(writer, sheet_name="Группы", index=False)
+                    if not teachers_sheet.empty:
+                        teachers_sheet.to_excel(writer, sheet_name="Преподаватели", index=False)
+                    if not export_df.empty:
+                        export_df.to_excel(writer, sheet_name="Отчет", index=False)
+                st.session_state.mass_excel = output.getvalue()
+                st.success(f"✅ Всего собрано {len(combined)} занятий")
             else:
+                st.session_state.mass_result = None
+                st.session_state.mass_excel = None
                 st.warning("Не удалось загрузить ни одного расписания")
+
+    # ----- отображение результата (сохраняется после скачивания) -----
+    if st.session_state.mass_result is not None:
+        combined = st.session_state.mass_result
+        st.metric("Всего занятий", len(combined))
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.write("**По типам занятий:**")
+            st.dataframe(combined["Тип занятия"].value_counts())
+        with col_b:
+            st.write("**По преподавателям:**")
+            st.dataframe(combined["Преподаватель"].value_counts())
+
+        if st.session_state.mass_excel is not None:
+            st.download_button(
+                label="📥 Скачать Excel (Группы + Преподаватели + Отчет)",
+                data=st.session_state.mass_excel,
+                file_name=f"mass_schedule_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="mass_download_btn",  # стабильный key — не сбрасывает состояние
+            )
+
+        if st.button("🗑 Очистить результат", use_container_width=True):
+            st.session_state.mass_result = None
+            st.session_state.mass_excel = None
+            st.rerun()
