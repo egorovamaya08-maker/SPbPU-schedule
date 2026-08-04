@@ -524,53 +524,113 @@ def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
 
     return result
 
-def prepare_sorted_raw_sheets(combined_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+
+def prepare_sorted_raw_sheets(
+    combined_df: pd.DataFrame,
+    selected_groups: list[str] | None = None,
+    selected_teachers: list[str] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Готовит два DataFrame для Excel:
-    - groups_sheet: только данные групп, сортировка Группа → Дата → Время
-    - teachers_sheet: только данные преподавателей, сортировка Преподаватель → Дата → Время
+    Лист «Группы»:
+      - только данные выбранных групп
+      - сортировка: Группа → Дата (от поздней к ранней) → Время
+      - после данных: пустая строка + заголовок
+        «Преподаватели, которые ведут занятия у этих групп в указанный период»
+        + список уникальных преподавателей из этих занятий
+
+    Лист «Преподаватели»:
+      - только выбранные преподаватели (не все, кто встретился в группах)
+      - сортировка: Преподаватель → Дата (от поздней к ранней) → Время
     """
     if combined_df is None or combined_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
     df = combined_df.copy()
-
-    # единый столбец даты для сортировки
     df["_dt"] = df["Дата"].apply(lambda x: parse_ruz_date_to_date(x, 2026))
 
-    # ----- лист групп -----
-    if "Группа" in df.columns:
-        gdf = df[df["Группа"].notna() & (df["Группа"].astype(str).str.len() > 0)].copy()
-        # убираем строки, которые пришли только от преподавателя (там обычно есть "Группы")
-        if "Группы" in gdf.columns:
-            # оставляем строки, где Группа заполнена парсером группы
-            pass
+    selected_groups = selected_groups or []
+    selected_teachers = selected_teachers or []
+
+    # ---------- ЛИСТ ГРУПП ----------
+    gdf = pd.DataFrame()
+    if "Группа" in df.columns and selected_groups:
+        # только строки, пришедшие от парсера групп (есть «Группа» и нет «Группы»)
+        mask_group = df["Группа"].isin(selected_groups)
+        if "Группы" in df.columns:
+            # строки от преподавателя имеют заполненный «Группы» — исключаем их
+            mask_group = mask_group & (df["Группы"].isna() | (df["Группы"].astype(str).str.strip() == ""))
+        gdf = df[mask_group].copy()
         gdf = gdf.dropna(subset=["_dt"]).sort_values(
-            by=["Группа", "_dt", "Время"], ascending=[True, True, True]
+            by=["Группа", "_dt", "Время"],
+            ascending=[True, False, True],  # дата: от поздней к ранней
         )
         gdf = gdf.drop(columns=["_dt"], errors="ignore")
-        # порядок столбцов
-        preferred = ["Группа", "Дата", "Время", "Дисциплина", "Тип занятия", "Преподаватель", "Место"]
-        cols = [c for c in preferred if c in gdf.columns] + [c for c in gdf.columns if c not in preferred]
-        gdf = gdf[cols]
-    else:
-        gdf = pd.DataFrame()
 
-    # ----- лист преподавателей -----
-    if "Преподаватель" in df.columns:
-        tdf = df.copy()
-        # если есть "Группы" (из парсера преподавателя) — используем их
-        if "Группы" in tdf.columns and "Группа" not in tdf.columns:
-            tdf["Группа"] = tdf["Группы"]
+        preferred = ["Группа", "Дата", "Время", "Дисциплина", "Тип занятия", "Преподаватель", "Место"]
+        cols = [c for c in preferred if c in gdf.columns] + [
+            c for c in gdf.columns if c not in preferred and c not in ("Группы",)
+        ]
+        gdf = gdf[cols]
+
+        # блок «Преподаватели, которые ведут занятия у этих групп…»
+        teachers_from_groups = sorted(
+            set(
+                t.strip()
+                for cell in gdf.get("Преподаватель", pd.Series(dtype=str)).dropna()
+                for t in str(cell).split(",")
+                if t.strip()
+            )
+        )
+        if teachers_from_groups:
+            # пустая строка-разделитель
+            empty = {c: "" for c in gdf.columns}
+            header_row = {c: "" for c in gdf.columns}
+            header_row[gdf.columns[0]] = (
+                "Преподаватели, которые ведут занятия у этих групп в указанный период"
+            )
+            extra_rows = [empty, header_row]
+            for name in teachers_from_groups:
+                row = {c: "" for c in gdf.columns}
+                row[gdf.columns[0]] = name
+                extra_rows.append(row)
+            gdf = pd.concat([gdf, pd.DataFrame(extra_rows)], ignore_index=True)
+
+    # ---------- ЛИСТ ПРЕПОДАВАТЕЛЕЙ ----------
+    tdf = pd.DataFrame()
+    if selected_teachers and "Преподаватель" in df.columns:
+        # только строки, где преподаватель из выбранных
+        # (парсер преподавателя пишет одного в «Преподаватель»)
+        def teacher_match(cell):
+            if pd.isna(cell):
+                return False
+            names = [x.strip() for x in str(cell).split(",")]
+            return any(t in selected_teachers for t in names)
+
+        tdf = df[df["Преподаватель"].apply(teacher_match)].copy()
+
+        # оставляем только те строки, которые реально пришли от парсера преподавателя
+        # (у них обычно есть столбец «Группы»)
+        if "Группы" in tdf.columns:
+            tdf = tdf[tdf["Группы"].notna() & (tdf["Группы"].astype(str).str.strip() != "")]
+
+        # ещё жёстче: только выбранные ФИО
+        tdf = tdf[
+            tdf["Преподаватель"].apply(
+                lambda x: any(t == str(x).strip() for t in selected_teachers)
+            )
+        ]
+
         tdf = tdf.dropna(subset=["_dt"]).sort_values(
-            by=["Преподаватель", "_dt", "Время"], ascending=[True, True, True]
+            by=["Преподаватель", "_dt", "Время"],
+            ascending=[True, False, True],  # дата: от поздней к ранней
         )
         tdf = tdf.drop(columns=["_dt"], errors="ignore")
-        preferred = ["Преподаватель", "Дата", "Время", "Дисциплина", "Тип занятия", "Группа", "Группы", "Место"]
-        cols = [c for c in preferred if c in tdf.columns] + [c for c in tdf.columns if c not in preferred]
+
+        preferred = ["Преподаватель", "Дата", "Время", "Дисциплина", "Тип занятия", "Группы", "Место"]
+        cols = [c for c in preferred if c in tdf.columns] + [
+            c for c in tdf.columns if c not in preferred and c != "Группа"
+        ]
         tdf = tdf[cols]
-    else:
-        tdf = pd.DataFrame()
 
     return gdf, tdf
     
@@ -590,20 +650,47 @@ def format_header(members: list[str]) -> str:
 def display_schedule_by_date(df: pd.DataFrame, title: str = ""):
     """
     Выводит расписание, группируя по датам в хронологическом порядке.
-    Успешно обрабатывает текстовый формат РУЗ вида '18 мая, пн' для 2026 года.
+    Поддерживает форматы РУЗ: '18 мая, пн' и '10 мар., вт'.
     """
     if df.empty:
         st.info("Нет данных")
         return
 
     df_copy = df.copy()
-    
-    # Словарь для конвертации месяцев
-    months_ru = {
-        'января': '01', 'февраля': '02', 'марта': '03', 'апреля': '04',
-        'мая': '05', 'июня': '06', 'июля': '07', 'августа': '08',
-        'сентября': '09', 'октября': '10', 'ноября': '11', 'декабря': '12'
-    }
+
+def parse_ruz_date(date_str):
+        # используем общий парсер (уже добавленный ранее)
+        d = parse_ruz_date_to_date(date_str, year=multi_start.year)
+        if d is None:
+            return pd.NaT
+        return pd.Timestamp(d)
+
+    # Создаем правильный столбец с датами для сортировки
+    df_copy['Дата_parsed'] = df_copy['Дата'].apply(parse_ruz_date)
+
+    # Если совсем ничего не распозналось — выводим отладку
+    if df_copy['Дата_parsed'].isna().all():
+        st.warning("Не удалось распознать даты. Проверьте формат.")
+        st.write("Примеры значений в столбце 'Дата':", df_copy['Дата'].head(10).tolist())
+        return
+
+    # Дропаем битые строки и сортируем по-настоящему в хронологическом порядке
+    df_valid = df_copy.dropna(subset=['Дата_parsed']).sort_values(by='Дата_parsed')
+
+    if df_valid.empty:
+        st.warning("Нет корректных дат для отображения")
+        return
+
+    if title:
+        st.subheader(title)
+
+    # Группируем и выводим по возрастанию дат
+    for dt in df_valid['Дата_parsed'].unique():
+        date_header = pd.Timestamp(dt).strftime("%d.%m.%Y")
+        st.subheader(f"📅 {date_header}")
+        day_data = df_valid[df_valid['Дата_parsed'] == dt].drop(columns=['Дата_parsed'])
+        st.dataframe(day_data, use_container_width=True)
+        
 
     def parse_ruz_date(date_str):
         try:
@@ -951,6 +1038,10 @@ with tab5:
                 }
 
                 # готовим Excel сразу и кладём в session_state
+                
+
+#вставить сюда новое
+                
                 groups_sheet, teachers_sheet = prepare_sorted_raw_sheets(combined)
                 export_df = prepare_export_dataframe(combined)
 
