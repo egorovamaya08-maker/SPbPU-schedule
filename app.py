@@ -577,11 +577,12 @@ def display_schedule_by_date(df: pd.DataFrame, title: str = ""):
     
 # ========================= ИНТЕРФЕЙС =========================
 # Вкладка tab2 закомментирована в списке, чтобы не отображаться в UI
-tab1, tab3, tab4 = st.tabs([
+tab1, tab3, tab4, tab5 = st.tabs([
     "📥 Вывод расписания",
     "📊 Статистика",
 #   "🔍 Поиск свободных окон",
-    "⚖️ Планирование ГИА"
+    "⚖️ Планирование ГИА",
+    "📥 Выгрузка всего и сразу (тест)"
 ])
 
 # ========================= ТАБ 1: ВЫВОД РАСПИСАНИЯ =========================
@@ -773,3 +774,122 @@ with tab4:
                 st.session_state.commission_matrix = auto_mark_conflicts(df, COMMISSION_MEMBERS)
                 st.success("✅ Загружено!")
                 st.rerun()
+
+
+
+# ========================= ТАБ 5: МАССОВАЯ ВЫГРУЗКА =========================
+with tab5:
+    st.subheader("📥 Массовая выгрузка расписаний")
+    st.markdown("Выберите **несколько групп** и/или **несколько преподавателей**. Данные будут собраны в один Excel-файл.")
+
+    col_g, col_t = st.columns(2)
+
+    with col_g:
+        st.markdown("**Группы**")
+        selected_groups = st.multiselect(
+            "Отметьте группы",
+            options=sorted(GROUP_MAP.keys()),
+            default=[],
+            key="multi_groups",
+            help="Можно выбрать любое количество групп"
+        )
+
+    with col_t:
+        st.markdown("**Преподаватели**")
+        selected_teachers = st.multiselect(
+            "Отметьте преподавателей",
+            options=sorted(TEACHER_MAP.keys()),
+            default=[],
+            key="multi_teachers",
+            help="Можно выбрать любое количество преподавателей"
+        )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        multi_start = st.date_input("Дата начала", datetime(2026, 2, 1), key="multi_start")
+    with col2:
+        multi_end = st.date_input("Дата окончания", datetime(2026, 5, 25), key="multi_end")
+
+    st.caption(f"Выбрано: {len(selected_groups)} групп, {len(selected_teachers)} преподавателей")
+
+    if st.button("📥 Собрать Excel по выбранным", type="primary", use_container_width=True):
+        if not selected_groups and not selected_teachers:
+            st.warning("Выберите хотя бы одну группу или одного преподавателя")
+        else:
+            all_dfs = []
+            progress = st.progress(0)
+            status = st.empty()
+            total = len(selected_groups) + len(selected_teachers)
+            done = 0
+
+            # --- Группы ---
+            for g in selected_groups:
+                status.info(f"Парсим группу: {g} …")
+                try:
+                    df = parse_group_schedule(g, multi_start, multi_end)
+                    if not df.empty:
+                        all_dfs.append(df)
+                        st.success(f"✅ {g}: {len(df)} занятий")
+                    else:
+                        st.warning(f"⚠️ {g}: нет данных")
+                except Exception as e:
+                    st.error(f"❌ Ошибка группы {g}: {e}")
+                done += 1
+                progress.progress(done / total)
+
+            # --- Преподаватели ---
+            for t in selected_teachers:
+                status.info(f"Парсим преподавателя: {t} …")
+                try:
+                    df = parse_teacher_schedule(t, multi_start, multi_end)
+                    if not df.empty:
+                        all_dfs.append(df)
+                        st.success(f"✅ {t}: {len(df)} занятий")
+                    else:
+                        st.warning(f"⚠️ {t}: нет данных")
+                except Exception as e:
+                    st.error(f"❌ Ошибка преподавателя {t}: {e}")
+                done += 1
+                progress.progress(done / total)
+
+            status.empty()
+            progress.empty()
+
+            if all_dfs:
+                combined = pd.concat(all_dfs, ignore_index=True)
+                st.session_state.schedule_data = {
+                    f"Массовая выгрузка ({len(selected_groups)} гр. + {len(selected_teachers)} преп.)": combined
+                }
+                st.success(f"✅ Всего собрано {len(combined)} занятий")
+
+                # Показываем статистику
+                st.metric("Всего занятий", len(combined))
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.write("**По типам занятий:**")
+                    st.dataframe(combined["Тип занятия"].value_counts())
+                with col_b:
+                    st.write("**По преподавателям:**")
+                    st.dataframe(combined["Преподаватель"].value_counts())
+
+                # Excel
+                export_df = prepare_export_dataframe(combined)
+                if not export_df.empty:
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                        export_df.to_excel(writer, sheet_name="Отчет", index=False)
+                        # Дополнительный лист с сырыми данными
+                        combined.to_excel(writer, sheet_name="Сырые данные", index=False)
+                    excel_data = output.getvalue()
+
+                    st.download_button(
+                        label="📥 Скачать Excel (все выбранные)",
+                        data=excel_data,
+                        file_name=f"mass_schedule_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                else:
+                    st.warning("Не удалось сформировать отчёт для Excel")
+            else:
+                st.warning("Не удалось загрузить ни одного расписания")
