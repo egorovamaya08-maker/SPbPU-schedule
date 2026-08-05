@@ -566,21 +566,31 @@ def prepare_sorted_raw_sheets(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Лист «Группы»:
-      - только данные выбранных групп
-      - сортировка: Группа → Дата (от поздней к ранней) → Время
-      - после данных: пустая строка + заголовок
-        «Преподаватели, которые ведут занятия у этих групп в указанный период»
-        + список уникальных преподавателей из этих занятий
+      - данные выбранных групп
+      - сортировка: Дата (хронологически, от ранней к поздней) → Группа → Время
+      - в конце: список преподавателей + статистика по типам занятий
 
     Лист «Преподаватели»:
-      - только выбранные преподаватели (не все, кто встретился в группах)
-      - сортировка: Преподаватель → Дата (от поздней к ранней) → Время
+      - данные выбранных преподавателей
+      - сортировка: Дата → Преподаватель → Время
     """
     if combined_df is None or combined_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
     df = combined_df.copy()
-    df["_dt"] = df["Дата"].apply(lambda x: parse_ruz_date_to_date(x, 2026))
+
+    def _to_dt(x):
+        d = parse_ruz_date_to_date(x, 2026)
+        if d is not None:
+            return d
+        for fmt in ("%d.%m.%Y", "%d.%m.%y"):
+            try:
+                return datetime.strptime(str(x).strip(), fmt).date()
+            except ValueError:
+                pass
+        return None
+
+    df["_dt"] = df["Дата"].apply(_to_dt)
 
     selected_groups = selected_groups or []
     selected_teachers = selected_teachers or []
@@ -588,15 +598,15 @@ def prepare_sorted_raw_sheets(
     # ---------- ЛИСТ ГРУПП ----------
     gdf = pd.DataFrame()
     if "Группа" in df.columns and selected_groups:
-        # только строки, пришедшие от парсера групп (есть «Группа» и нет «Группы»)
         mask_group = df["Группа"].isin(selected_groups)
         if "Группы" in df.columns:
-            # строки от преподавателя имеют заполненный «Группы» — исключаем их
-            mask_group = mask_group & (df["Группы"].isna() | (df["Группы"].astype(str).str.strip() == ""))
+            mask_group = mask_group & (
+                df["Группы"].isna() | (df["Группы"].astype(str).str.strip() == "")
+            )
         gdf = df[mask_group].copy()
         gdf = gdf.dropna(subset=["_dt"]).sort_values(
-            by=["Группа", "_dt", "Время"],
-            ascending=[True, False, True],  # дата: от поздней к ранней
+            by=["_dt", "Группа", "Время"],
+            ascending=[True, True, True],  # дата: от ранней к поздней
         )
         gdf = gdf.drop(columns=["_dt"], errors="ignore")
 
@@ -606,7 +616,9 @@ def prepare_sorted_raw_sheets(
         ]
         gdf = gdf[cols]
 
-        # блок «Преподаватели, которые ведут занятия у этих групп…»
+        extra_rows = []
+
+        # --- преподаватели у этих групп ---
         teachers_from_groups = sorted(
             set(
                 t.strip()
@@ -616,24 +628,49 @@ def prepare_sorted_raw_sheets(
             )
         )
         if teachers_from_groups:
-            # пустая строка-разделитель
             empty = {c: "" for c in gdf.columns}
             header_row = {c: "" for c in gdf.columns}
             header_row[gdf.columns[0]] = (
                 "Преподаватели, которые ведут занятия у этих групп в указанный период"
             )
-            extra_rows = [empty, header_row]
+            extra_rows.extend([empty, header_row])
             for name in teachers_from_groups:
                 row = {c: "" for c in gdf.columns}
                 row[gdf.columns[0]] = name
                 extra_rows.append(row)
+
+        # --- статистика по типам занятий ---
+        if "Тип занятия" in gdf.columns and not gdf.empty:
+            # считаем только по строкам занятий (без уже добавленных footer-строк)
+            type_counts = (
+                gdf["Тип занятия"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .replace("", pd.NA)
+                .dropna()
+                .value_counts()
+            )
+            if not type_counts.empty:
+                empty = {c: "" for c in gdf.columns}
+                header_row = {c: "" for c in gdf.columns}
+                header_row[gdf.columns[0]] = "Статистика по типам занятий"
+                extra_rows.extend([empty, header_row])
+                for typ, cnt in type_counts.items():
+                    row = {c: "" for c in gdf.columns}
+                    row[gdf.columns[0]] = str(typ)
+                    # второй столбец — количество
+                    if len(gdf.columns) > 1:
+                        row[gdf.columns[1]] = int(cnt)
+                    extra_rows.append(row)
+
+        if extra_rows:
             gdf = pd.concat([gdf, pd.DataFrame(extra_rows)], ignore_index=True)
 
     # ---------- ЛИСТ ПРЕПОДАВАТЕЛЕЙ ----------
     tdf = pd.DataFrame()
     if selected_teachers and "Преподаватель" in df.columns:
-        # только строки, где преподаватель из выбранных
-        # (парсер преподавателя пишет одного в «Преподаватель»)
+
         def teacher_match(cell):
             if pd.isna(cell):
                 return False
@@ -642,12 +679,9 @@ def prepare_sorted_raw_sheets(
 
         tdf = df[df["Преподаватель"].apply(teacher_match)].copy()
 
-        # оставляем только те строки, которые реально пришли от парсера преподавателя
-        # (у них обычно есть столбец «Группы»)
         if "Группы" in tdf.columns:
             tdf = tdf[tdf["Группы"].notna() & (tdf["Группы"].astype(str).str.strip() != "")]
 
-        # ещё жёстче: только выбранные ФИО
         tdf = tdf[
             tdf["Преподаватель"].apply(
                 lambda x: any(t == str(x).strip() for t in selected_teachers)
@@ -655,8 +689,8 @@ def prepare_sorted_raw_sheets(
         ]
 
         tdf = tdf.dropna(subset=["_dt"]).sort_values(
-            by=["Преподаватель", "_dt", "Время"],
-            ascending=[True, False, True],  # дата: от поздней к ранней
+            by=["_dt", "Преподаватель", "Время"],
+            ascending=[True, True, True],
         )
         tdf = tdf.drop(columns=["_dt"], errors="ignore")
 
@@ -722,40 +756,11 @@ def display_schedule_by_date(df: pd.DataFrame, title: str = ""):
 
 
 def build_summary_report(combined_df, selected_groups, selected_teachers, start_date, end_date):
-    rows = []
-    rows.append({"Параметр": "Период", "Значение": f"{start_date} — {end_date}"})
-    rows.append({"Параметр": "Всего занятий", "Значение": len(combined_df) if combined_df is not None else 0})
-    rows.append({"Параметр": "", "Значение": ""})
-    rows.append({"Параметр": "Выбранные группы", "Значение": ", ".join(selected_groups) if selected_groups else "—"})
-    rows.append({"Параметр": "Выбранные преподаватели", "Значение": ", ".join(selected_teachers) if selected_teachers else "—"})
-    rows.append({"Параметр": "", "Значение": ""})
-
-    if combined_df is not None and not combined_df.empty:
-        teachers_from_groups = set()
-        if "Группа" in combined_df.columns and selected_groups:
-            gmask = combined_df["Группа"].isin(selected_groups)
-            if "Группы" in combined_df.columns:
-                gmask = gmask & (combined_df["Группы"].isna() | (combined_df["Группы"].astype(str).str.strip() == ""))
-            for cell in combined_df.loc[gmask, "Преподаватель"].dropna():
-                for t in str(cell).split(","):
-                    t = t.strip()
-                    if t:
-                        teachers_from_groups.add(t)
-        rows.append({
-            "Параметр": "Преподаватели у выбранных групп",
-            "Значение": ", ".join(sorted(teachers_from_groups)) if teachers_from_groups else "—",
-        })
-        rows.append({"Параметр": "", "Значение": ""})
-        rows.append({"Параметр": "Занятия по типам", "Значение": ""})
-        if "Тип занятия" in combined_df.columns:
-            for typ, cnt in combined_df["Тип занятия"].value_counts().items():
-                rows.append({"Параметр": f"  • {typ}", "Значение": int(cnt)})
-        rows.append({"Параметр": "", "Значение": ""})
-        rows.append({"Параметр": "Занятия по преподавателям", "Значение": ""})
-        if "Преподаватель" in combined_df.columns:
-            for name, cnt in combined_df["Преподаватель"].value_counts().items():
-                rows.append({"Параметр": f"  • {name}", "Значение": int(cnt)})
-
+    rows = [
+        {"Параметр": "Всего занятий", "Значение": len(combined_df) if combined_df is not None else 0},
+        {"Параметр": "Выбранные группы", "Значение": ", ".join(selected_groups) if selected_groups else "—"},
+        {"Параметр": "Выбранные преподаватели", "Значение": ", ".join(selected_teachers) if selected_teachers else "—"},
+    ]
     return pd.DataFrame(rows)
     
 # ========================= ИНТЕРФЕЙС =========================
