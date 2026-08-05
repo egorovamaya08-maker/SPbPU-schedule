@@ -235,22 +235,31 @@ def parse_ruz_date_to_date(date_text: str, year: int = 2026) -> date | None:
     except Exception:
         return None
         
-def parse_group_schedule(group_human: str, start_date: datetime, end_date: datetime):
+def parse_group_schedule(group_human: str, start_date: datetime, end_date: datetime, show_progress: bool = True):
     if group_human not in GROUP_MAP:
         st.error(f"Группа {group_human} не найдена.")
         return pd.DataFrame()
     group_id = GROUP_MAP[group_human]
     all_lessons = []
 
-    current = start_date - timedelta(days=start_date.weekday())
-    if current < start_date:
+    s = start_date.date() if isinstance(start_date, datetime) else start_date
+    e = end_date.date() if isinstance(end_date, datetime) else end_date
+
+    current = datetime.combine(s, datetime.min.time()) - timedelta(days=s.weekday())
+    if current.date() < s:
         current += timedelta(weeks=1)
 
-    progress_bar = st.progress(0)
-    week_count = 0
-    total_weeks = ((end_date - start_date).days // 7) + 2
+    week_dates = []
+    tmp = current
+    while tmp.date() <= e:
+        week_dates.append(tmp)
+        tmp += timedelta(weeks=1)
+    total_weeks = max(len(week_dates), 1)
 
-    while current <= end_date:
+    progress_bar = st.progress(0, text="0%") if show_progress else None
+    week_count = 0
+
+    for current in week_dates:
         week_count += 1
         url = f"https://ruz.spbstu.ru/faculty/100/groups/{group_id}?date={current.strftime('%Y-%m-%d')}"
         try:
@@ -262,21 +271,16 @@ def parse_group_schedule(group_human: str, start_date: datetime, end_date: datet
                     if not date_elem:
                         continue
                     date_text = date_elem.text.strip()
-                 
 
                     try:
                         lesson_date = parse_ruz_date_to_date(date_text, year=2026)
                         if lesson_date is None:
                             continue
-                        # нормализуем границы к date, чтобы не было TypeError
-                        s = start_date.date() if isinstance(start_date, datetime) else start_date
-                        e = end_date.date() if isinstance(end_date, datetime) else end_date
                         if lesson_date < s or lesson_date > e:
                             continue
                     except Exception:
                         continue
-                    
-                   
+
                     for lesson in day.find_all('li', class_='lesson'):
                         subject = ""
                         subject_elem = lesson.find('div', class_='lesson__subject')
@@ -306,31 +310,46 @@ def parse_group_schedule(group_human: str, start_date: datetime, end_date: datet
                                 "Место": place,
                                 "Группа": group_human
                             })
-            progress_bar.progress(min(week_count / total_weeks, 1.0))
-            time.sleep(12)
+            if progress_bar is not None:
+                pct = week_count / total_weeks
+                progress_bar.progress(pct, text=f"{int(pct * 100)}%")
+            time.sleep(2)
         except Exception as e:
             st.warning(f"Ошибка на неделе {current}: {e}")
-        current += timedelta(weeks=1)
+            if progress_bar is not None:
+                pct = week_count / total_weeks
+                progress_bar.progress(pct, text=f"{int(pct * 100)}%")
+    if progress_bar is not None:
+        progress_bar.progress(1.0, text="100%")
     return pd.DataFrame(all_lessons)
 
 
-def parse_teacher_schedule(teacher_name: str, start_date: datetime, end_date: datetime):
+def parse_teacher_schedule(teacher_name: str, start_date: datetime, end_date: datetime, show_progress: bool = True):
     if teacher_name not in TEACHER_MAP:
         st.error(f"Преподаватель {teacher_name} не найден.")
         return pd.DataFrame()
     teacher_id = TEACHER_MAP[teacher_name]
     all_lessons = []
 
-    current = start_date - timedelta(days=start_date.weekday())
-    if current < start_date:
+    s = start_date.date() if isinstance(start_date, datetime) else start_date
+    e = end_date.date() if isinstance(end_date, datetime) else end_date
+
+    current = datetime.combine(s, datetime.min.time()) - timedelta(days=s.weekday())
+    if current.date() < s:
         current += timedelta(weeks=1)
 
-    progress_bar = st.progress(0)
+    week_dates = []
+    tmp = current
+    while tmp.date() <= e:
+        week_dates.append(tmp)
+        tmp += timedelta(weeks=1)
+    total_weeks = max(len(week_dates), 1)
+
+    progress_bar = st.progress(0, text="0%") if show_progress else None
     week_count = 0
-    total_weeks = ((end_date - start_date).days // 7) + 2
     base_url = f"https://ruz.spbstu.ru/teachers/{teacher_id}"
 
-    while current <= end_date:
+    for current in week_dates:
         week_count += 1
         url = f"{base_url}?date={current.strftime('%Y-%m-%d')}"
         try:
@@ -342,15 +361,24 @@ def parse_teacher_schedule(teacher_name: str, start_date: datetime, end_date: da
                     if not date_elem:
                         continue
                     date_text = date_elem.text.strip()
-                    
+
                     try:
-                        lesson_date = datetime.strptime(date_text, "%d.%m.%Y")
-                        if lesson_date < start_date or lesson_date > end_date:
+                        lesson_date = None
+                        for fmt in ("%d.%m.%Y", "%d.%m.%y"):
+                            try:
+                                lesson_date = datetime.strptime(date_text.strip(), fmt).date()
+                                break
+                            except ValueError:
+                                pass
+                        if lesson_date is None:
+                            lesson_date = parse_ruz_date_to_date(date_text, year=2026)
+                        if lesson_date is None:
                             continue
-                    except:
+                        if lesson_date < s or lesson_date > e:
+                            continue
+                    except Exception:
                         pass
-                    
-                    
+
                     for lesson in day.find_all('li', class_='lesson'):
                         subject = ""
                         subject_elem = lesson.find('div', class_='lesson__subject')
@@ -383,11 +411,17 @@ def parse_teacher_schedule(teacher_name: str, start_date: datetime, end_date: da
                                 "Преподаватель": teacher_name,
                                 "Место": place
                             })
-            progress_bar.progress(min(week_count / total_weeks, 1.0))
-            time.sleep(12)
+            if progress_bar is not None:
+                pct = week_count / total_weeks
+                progress_bar.progress(pct, text=f"{int(pct * 100)}%")
+            time.sleep(2)
         except Exception as e:
             st.warning(f"Ошибка на неделе {current}: {e}")
-        current += timedelta(weeks=1)
+            if progress_bar is not None:
+                pct = week_count / total_weeks
+                progress_bar.progress(pct, text=f"{int(pct * 100)}%")
+    if progress_bar is not None:
+        progress_bar.progress(1.0, text="100%")
     return pd.DataFrame(all_lessons)
 
 
@@ -648,10 +682,6 @@ def format_header(members: list[str]) -> str:
 
 
 def display_schedule_by_date(df: pd.DataFrame, title: str = ""):
-    """
-    Выводит расписание, группируя по датам в хронологическом порядке.
-    Поддерживает форматы РУЗ: '18 мая, пн' и '10 мар., вт'.
-    """
     if df.empty:
         st.info("Нет данных")
         return
@@ -659,24 +689,24 @@ def display_schedule_by_date(df: pd.DataFrame, title: str = ""):
     df_copy = df.copy()
 
     def parse_ruz_date(date_str):
-        # используем общий парсер
         d = parse_ruz_date_to_date(date_str, year=2026)
         if d is None:
+            for fmt in ("%d.%m.%Y", "%d.%m.%y"):
+                try:
+                    return pd.Timestamp(datetime.strptime(str(date_str).strip(), fmt))
+                except ValueError:
+                    pass
             return pd.NaT
         return pd.Timestamp(d)
 
-    # Создаем правильный столбец с датами для сортировки
     df_copy['Дата_parsed'] = df_copy['Дата'].apply(parse_ruz_date)
 
-    # Если совсем ничего не распозналось — выводим отладку
     if df_copy['Дата_parsed'].isna().all():
         st.warning("Не удалось распознать даты. Проверьте формат.")
         st.write("Примеры значений в столбце 'Дата':", df_copy['Дата'].head(10).tolist())
         return
 
-    # Дропаем битые строки и сортируем по-настоящему в хронологическом порядке
     df_valid = df_copy.dropna(subset=['Дата_parsed']).sort_values(by='Дата_parsed')
-
     if df_valid.empty:
         st.warning("Нет корректных дат для отображения")
         return
@@ -684,12 +714,49 @@ def display_schedule_by_date(df: pd.DataFrame, title: str = ""):
     if title:
         st.subheader(title)
 
-    # Группируем и выводим по возрастанию дат
     for dt in df_valid['Дата_parsed'].unique():
         date_header = pd.Timestamp(dt).strftime("%d.%m.%Y")
         st.subheader(f"📅 {date_header}")
         day_data = df_valid[df_valid['Дата_parsed'] == dt].drop(columns=['Дата_parsed'])
         st.dataframe(day_data, use_container_width=True)
+
+
+def build_summary_report(combined_df, selected_groups, selected_teachers, start_date, end_date):
+    rows = []
+    rows.append({"Параметр": "Период", "Значение": f"{start_date} — {end_date}"})
+    rows.append({"Параметр": "Всего занятий", "Значение": len(combined_df) if combined_df is not None else 0})
+    rows.append({"Параметр": "", "Значение": ""})
+    rows.append({"Параметр": "Выбранные группы", "Значение": ", ".join(selected_groups) if selected_groups else "—"})
+    rows.append({"Параметр": "Выбранные преподаватели", "Значение": ", ".join(selected_teachers) if selected_teachers else "—"})
+    rows.append({"Параметр": "", "Значение": ""})
+
+    if combined_df is not None and not combined_df.empty:
+        teachers_from_groups = set()
+        if "Группа" in combined_df.columns and selected_groups:
+            gmask = combined_df["Группа"].isin(selected_groups)
+            if "Группы" in combined_df.columns:
+                gmask = gmask & (combined_df["Группы"].isna() | (combined_df["Группы"].astype(str).str.strip() == ""))
+            for cell in combined_df.loc[gmask, "Преподаватель"].dropna():
+                for t in str(cell).split(","):
+                    t = t.strip()
+                    if t:
+                        teachers_from_groups.add(t)
+        rows.append({
+            "Параметр": "Преподаватели у выбранных групп",
+            "Значение": ", ".join(sorted(teachers_from_groups)) if teachers_from_groups else "—",
+        })
+        rows.append({"Параметр": "", "Значение": ""})
+        rows.append({"Параметр": "Занятия по типам", "Значение": ""})
+        if "Тип занятия" in combined_df.columns:
+            for typ, cnt in combined_df["Тип занятия"].value_counts().items():
+                rows.append({"Параметр": f"  • {typ}", "Значение": int(cnt)})
+        rows.append({"Параметр": "", "Значение": ""})
+        rows.append({"Параметр": "Занятия по преподавателям", "Значение": ""})
+        if "Преподаватель" in combined_df.columns:
+            for name, cnt in combined_df["Преподаватель"].value_counts().items():
+                rows.append({"Параметр": f"  • {name}", "Значение": int(cnt)})
+
+    return pd.DataFrame(rows)
     
 # ========================= ИНТЕРФЕЙС =========================
 # Вкладка tab2 закомментирована в списке, чтобы не отображаться в UI
@@ -898,7 +965,6 @@ with tab5:
     st.subheader("📥 Массовая выгрузка расписаний")
     st.markdown("Выберите **несколько групп** и/или **несколько преподавателей**. Данные будут собраны в один Excel-файл.")
 
-    # инициализация session_state
     if "mass_result" not in st.session_state:
         st.session_state.mass_result = None
     if "mass_excel" not in st.session_state:
@@ -934,20 +1000,19 @@ with tab5:
         if not selected_groups and not selected_teachers:
             st.warning("Выберите хотя бы одну группу или одного преподавателя")
         else:
-            # запоминаем выбор
             st.session_state.mass_selected_groups = selected_groups
             st.session_state.mass_selected_teachers = selected_teachers
 
             all_dfs = []
-            progress = st.progress(0)
-            status = st.empty()
             total = max(len(selected_groups) + len(selected_teachers), 1)
+            progress = st.progress(0, text="0%")
+            status = st.empty()
             done = 0
 
             for g in selected_groups:
-                status.info(f"Парсим группу: {g} …")
+                status.info(f"Парсим группу: {g} ({done + 1}/{total}) …")
                 try:
-                    df = parse_group_schedule(g, multi_start, multi_end)
+                    df = parse_group_schedule(g, multi_start, multi_end, show_progress=True)
                     if not df.empty:
                         all_dfs.append(df)
                         st.success(f"✅ {g}: {len(df)} занятий")
@@ -956,12 +1021,12 @@ with tab5:
                 except Exception as e:
                     st.error(f"❌ Ошибка группы {g}: {e}")
                 done += 1
-                progress.progress(done / total)
+                progress.progress(done / total, text=f"{int(done / total * 100)}%")
 
             for t in selected_teachers:
-                status.info(f"Парсим преподавателя: {t} …")
+                status.info(f"Парсим преподавателя: {t} ({done + 1}/{total}) …")
                 try:
-                    df = parse_teacher_schedule(t, multi_start, multi_end)
+                    df = parse_teacher_schedule(t, multi_start, multi_end, show_progress=True)
                     if not df.empty:
                         all_dfs.append(df)
                         st.success(f"✅ {t}: {len(df)} занятий")
@@ -970,10 +1035,10 @@ with tab5:
                 except Exception as e:
                     st.error(f"❌ Ошибка преподавателя {t}: {e}")
                 done += 1
-                progress.progress(done / total)
+                progress.progress(done / total, text=f"{int(done / total * 100)}%")
 
             status.empty()
-            progress.empty()
+            progress.progress(1.0, text="100%")
 
             if all_dfs:
                 combined = pd.concat(all_dfs, ignore_index=True)
@@ -982,12 +1047,18 @@ with tab5:
                     f"Массовая выгрузка ({len(selected_groups)} гр. + {len(selected_teachers)} преп.)": combined
                 }
 
-                # готовим Excel сразу и кладём в session_state
-                
-
-#вставить сюда новое
-                
-                groups_sheet, teachers_sheet = prepare_sorted_raw_sheets(combined)
+                groups_sheet, teachers_sheet = prepare_sorted_raw_sheets(
+                    combined,
+                    selected_groups=selected_groups,
+                    selected_teachers=selected_teachers,
+                )
+                summary_df = build_summary_report(
+                    combined,
+                    selected_groups=selected_groups,
+                    selected_teachers=selected_teachers,
+                    start_date=multi_start,
+                    end_date=multi_end,
+                )
                 export_df = prepare_export_dataframe(combined)
 
                 output = io.BytesIO()
@@ -996,8 +1067,10 @@ with tab5:
                         groups_sheet.to_excel(writer, sheet_name="Группы", index=False)
                     if not teachers_sheet.empty:
                         teachers_sheet.to_excel(writer, sheet_name="Преподаватели", index=False)
+                    if not summary_df.empty:
+                        summary_df.to_excel(writer, sheet_name="Отчет", index=False)
                     if not export_df.empty:
-                        export_df.to_excel(writer, sheet_name="Отчет", index=False)
+                        export_df.to_excel(writer, sheet_name="Сводка по дисциплинам", index=False)
                 st.session_state.mass_excel = output.getvalue()
                 st.success(f"✅ Всего собрано {len(combined)} занятий")
             else:
@@ -1005,7 +1078,7 @@ with tab5:
                 st.session_state.mass_excel = None
                 st.warning("Не удалось загрузить ни одного расписания")
 
-    # ----- отображение результата (сохраняется после скачивания) -----
+    # ----- отображение результата -----
     if st.session_state.mass_result is not None:
         combined = st.session_state.mass_result
         st.metric("Всего занятий", len(combined))
@@ -1025,7 +1098,7 @@ with tab5:
                 file_name=f"mass_schedule_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                key="mass_download_btn",  # стабильный key — не сбрасывает состояние
+                key="mass_download_btn",
             )
 
         if st.button("🗑 Очистить результат", use_container_width=True):
