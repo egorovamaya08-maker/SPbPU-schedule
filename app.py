@@ -316,7 +316,7 @@ def parse_group_schedule(group_human: str, start_date: datetime, end_date: datet
                        #     if spans and len(spans) > 2:
                          #       subject = spans[-1].text.strip()
                        
-                        subject = ""
+                          subject = ""
                           subject_elem = lesson.find('div', class_='lesson__subject')
                           if subject_elem:                              
                               spans = subject_elem.find_all('span')
