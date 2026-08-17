@@ -329,29 +329,29 @@ def parse_group_schedule(group_human: str, start_date: datetime, end_date: datet
                               subject = re.sub(r'\s+', ' ', subject).strip()
 
                       
-                        lesson_type = lesson.find('div', class_='lesson__type')
-                        lesson_type = lesson_type.text.strip() if lesson_type else ""
-                        teachers = []
-                        teachers_elem = lesson.find('div', class_='lesson__teachers')
-                        if teachers_elem:
-                            for a in teachers_elem.find_all('a'):
-                                name = a.text.strip()
-                                if name and len(name) > 3:
-                                    teachers.append(name)
-                        time_str = lesson.find('span', class_='lesson__time')
-                        time_str = time_str.text.strip() if time_str else ""
-                        place = parse_place(lesson.find('div', class_='lesson__places'))
-                        if subject and teachers:
-                          teacher_str = ", ".join(teachers) if teachers else "Не указано"
-                          all_lessons.append({
-                                "Дата": date_text,
-                                "Время": time_str,
-                                "Дисциплина": subject,
-                                "Тип занятия": lesson_type,
-                                "Преподаватель": ", ".join(teachers),
-                                "Место": place,
-                                "Группа": group_human
-                            })
+                          lesson_type = lesson.find('div', class_='lesson__type')
+                          lesson_type = lesson_type.text.strip() if lesson_type else ""
+                          teachers = []
+                          teachers_elem = lesson.find('div', class_='lesson__teachers')
+                          if teachers_elem:
+                              for a in teachers_elem.find_all('a'):
+                                  name = a.text.strip()
+                                  if name and len(name) > 3:
+                                      teachers.append(name)
+                          time_str = lesson.find('span', class_='lesson__time')
+                          time_str = time_str.text.strip() if time_str else ""
+                          place = parse_place(lesson.find('div', class_='lesson__places'))
+                          if subject and teachers:
+                            teacher_str = ", ".join(teachers) if teachers else "Не указано"
+                            all_lessons.append({
+                                  "Дата": date_text,
+                                  "Время": time_str,
+                                  "Дисциплина": subject,
+                                  "Тип занятия": lesson_type,
+                                  "Преподаватель": ", ".join(teachers),
+                                  "Место": place,
+                                  "Группа": group_human
+                              })
             if progress_bar is not None:
                 pct = week_count / total_weeks
                 progress_bar.progress(pct, text=f"{int(pct * 100)}%")
