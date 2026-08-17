@@ -422,11 +422,24 @@ def parse_teacher_schedule(teacher_name: str, start_date: datetime, end_date: da
                             for link in groups_elem.find_all('a', class_='lesson__link'):
                                 groups.append(link.text.strip())
                         place = parse_place(lesson.find('div', class_='lesson__places'))
+
                         teacher_element = lesson.find('div', class_='lesson__teachers')
                         is_our_teacher = False
+                        teacher_name_to_save = "Не указано"  
+                        
                         if teacher_element:
-                            if any(f'/teachers/{teacher_id}' in a.get('href', '') for a in teacher_element.find_all('a')):
+                            teacher_links = teacher_element.find_all('a')
+                            if any(f'/teachers/{teacher_id}' in a.get('href', '') for a in teacher_links):
                                 is_our_teacher = True
+                                
+                                teacher_name_to_save = teacher_name 
+                            else:
+                               
+                                is_our_teacher = False
+                        else:
+                           
+                            is_our_teacher = True
+                            
                         if is_our_teacher and subject:
                             all_lessons.append({
                                 "Дата": date_text,
@@ -434,9 +447,12 @@ def parse_teacher_schedule(teacher_name: str, start_date: datetime, end_date: da
                                 "Дисциплина": subject,
                                 "Тип занятия": lesson_type,
                                 "Группы": ', '.join(groups),
-                                "Преподаватель": teacher_name,
+                                "Преподаватель": teacher_name_to_save, 
                                 "Место": place
                             })
+
+
+          
             if progress_bar is not None:
                 pct = week_count / total_weeks
                 progress_bar.progress(pct, text=f"{int(pct * 100)}%")
@@ -529,7 +545,8 @@ def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
     df["Тип занятия"] = df["Тип занятия"].str.strip()
 
     agg_dict = {
-        "Преподаватель": lambda x: ", ".join(sorted(set(x.dropna()))),
+      "Преподаватель": lambda x: ", ".join(sorted([str(n).strip() for n in set(x.dropna()) if str(n).strip() != "Не указано"])),
+      #  "Преподаватель": lambda x: ", ".join(sorted(set(x.dropna()))),
         "Место": lambda x: ", ".join(sorted(set(x.dropna()))),
         "Тип занятия": lambda x: x.value_counts().to_dict()  # временный словарь
     }
