@@ -328,7 +328,8 @@ def parse_group_schedule(group_human: str, start_date: datetime, end_date: datet
                         time_str = time_str.text.strip() if time_str else ""
                         place = parse_place(lesson.find('div', class_='lesson__places'))
                         if subject and teachers:
-                            all_lessons.append({
+                          teacher_str = ", ".join(teachers) if teachers else "Не указано"
+                          all_lessons.append({
                                 "Дата": date_text,
                                 "Время": time_str,
                                 "Дисциплина": subject,
@@ -525,6 +526,10 @@ def auto_mark_conflicts(matrix: pd.DataFrame, commission_members: dict) -> pd.Da
     
     return result_df
 
+def combine_teachers(x):
+    teachers = sorted(set(str(n).strip() for n in x.dropna() if str(n).strip() and str(n).strip() != "Не указано"))
+    return ", ".join(teachers) if teachers else "Не указано"
+
 def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
   
     if combined_df.empty:
@@ -541,12 +546,14 @@ def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
 
         return pd.DataFrame()
 
+  
  
     df["Тип занятия"] = df["Тип занятия"].str.strip()
 
     agg_dict = {
-      "Преподаватель": lambda x: ", ".join(sorted([str(n).strip() for n in set(x.dropna()) if str(n).strip() != "Не указано"])),
+      #"Преподаватель": lambda x: ", ".join(sorted([str(n).strip() for n in set(x.dropna()) if str(n).strip() != "Не указано"])),
       #  "Преподаватель": lambda x: ", ".join(sorted(set(x.dropna()))),
+        "Преподаватель": combine_teachers,
         "Место": lambda x: ", ".join(sorted(set(x.dropna()))),
         "Тип занятия": lambda x: x.value_counts().to_dict()  # временный словарь
     }
