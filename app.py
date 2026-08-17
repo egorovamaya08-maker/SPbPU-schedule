@@ -237,12 +237,14 @@ def parse_ruz_date_to_date(date_text: str, year: int = 2026) -> date | None:
     if not date_text:
         return None
     try:
-        s = str(date_text).lower().strip().split(",")[0].strip()
+       # s = str(date_text).lower().strip().split(",")[0].strip()
+        s = str(date_text).lower().split(",")[0].strip()
         parts = s.split()
         if len(parts) < 2:
             return None
         day = int(parts[0])
-        month_raw = parts[1].rstrip(".")  
+      #  month_raw = parts[1].rstrip(".")  
+        month_raw = parts[1].strip(". \t\n\r\xa0")
 
         months = {
            
