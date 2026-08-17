@@ -310,52 +310,52 @@ def parse_group_schedule(group_human: str, start_date: datetime, end_date: datet
 
                     for lesson in day.find_all('li', class_='lesson'):
                    
-                    time_str = ""
-                    time_elem = lesson.find('span', class_='lesson__time')
-                    if time_elem:
-                        time_str = time_elem.get_text(strip=True)
-                
-                    
-                    subject = ""
-                    subject_elem = lesson.find('div', class_='lesson__subject')
-                    if subject_elem:
-                       
-                        time_in_subj = subject_elem.find('span', class_='lesson__time')
-                        if time_in_subj:
-                            time_in_subj.decompose()  
-                        
-                        subject = subject_elem.get_text(strip=True)
-                        subject = re.sub(r'\s+', ' ', subject).strip()
-                
-                   
-                    lesson_type = lesson.find('div', class_='lesson__type')
-                    lesson_type = lesson_type.get_text(strip=True) if lesson_type else ""
-                
-                    
-                    teachers = []
-                    teachers_elem = lesson.find('div', class_='lesson__teachers')
-                    if teachers_elem:
-                        for a in teachers_elem.find_all('a'):
-                            name = a.get_text(strip=True)
-                            if name and len(name) > 3:
-                                teachers.append(name)
-                
-                    teacher_str = ", ".join(teachers) if teachers else "Не указано"
-                
-                   
-                    place = parse_place(lesson.find('div', class_='lesson__places'))
-                
-                    
-                    if subject:
-                        all_lessons.append({
-                            "Дата": date_text,
-                            "Время": time_str,
-                            "Дисциплина": subject,
-                            "Тип занятия": lesson_type,
-                            "Преподаватель": teacher_str,
-                            "Место": place,
-                            "Группа": group_human
-                        })
+                      time_str = ""
+                      time_elem = lesson.find('span', class_='lesson__time')
+                      if time_elem:
+                          time_str = time_elem.get_text(strip=True)
+                  
+                      
+                      subject = ""
+                      subject_elem = lesson.find('div', class_='lesson__subject')
+                      if subject_elem:
+                         
+                          time_in_subj = subject_elem.find('span', class_='lesson__time')
+                          if time_in_subj:
+                              time_in_subj.decompose()  
+                          
+                          subject = subject_elem.get_text(strip=True)
+                          subject = re.sub(r'\s+', ' ', subject).strip()
+                  
+                     
+                      lesson_type = lesson.find('div', class_='lesson__type')
+                      lesson_type = lesson_type.get_text(strip=True) if lesson_type else ""
+                  
+                      
+                      teachers = []
+                      teachers_elem = lesson.find('div', class_='lesson__teachers')
+                      if teachers_elem:
+                          for a in teachers_elem.find_all('a'):
+                              name = a.get_text(strip=True)
+                              if name and len(name) > 3:
+                                  teachers.append(name)
+                  
+                      teacher_str = ", ".join(teachers) if teachers else "Не указано"
+                  
+                     
+                      place = parse_place(lesson.find('div', class_='lesson__places'))
+                  
+                      
+                      if subject:
+                          all_lessons.append({
+                              "Дата": date_text,
+                              "Время": time_str,
+                              "Дисциплина": subject,
+                              "Тип занятия": lesson_type,
+                              "Преподаватель": teacher_str,
+                              "Место": place,
+                              "Группа": group_human
+                          })
 
           
 
