@@ -8,7 +8,7 @@ import re
 import io
 
 st.set_page_config(page_title="RUZ Planner", layout="wide")
-st.title("📅 RUZ Planner")
+st.title("📅 Расписание")
 
 GROUP_MAP = {
 
