@@ -309,12 +309,26 @@ def parse_group_schedule(group_human: str, start_date: datetime, end_date: datet
                         continue
 
                     for lesson in day.find_all('li', class_='lesson'):
+                  #      subject = ""
+                   #     subject_elem = lesson.find('div', class_='lesson__subject')
+                     #   if subject_elem:
+                      #      spans = subject_elem.find_all('span')
+                       #     if spans and len(spans) > 2:
+                         #       subject = spans[-1].text.strip()
+                       
                         subject = ""
-                        subject_elem = lesson.find('div', class_='lesson__subject')
-                        if subject_elem:
-                            spans = subject_elem.find_all('span')
-                            if spans and len(spans) > 2:
-                                subject = spans[-1].text.strip()
+                          subject_elem = lesson.find('div', class_='lesson__subject')
+                          if subject_elem:                              
+                              spans = subject_elem.find_all('span')
+                              if spans:
+                                  subject = spans[-1].get_text(strip=True)
+                              
+                              if not subject:
+                                  subject = subject_elem.get_text(strip=True)
+                            
+                              subject = re.sub(r'\s+', ' ', subject).strip()
+
+                      
                         lesson_type = lesson.find('div', class_='lesson__type')
                         lesson_type = lesson_type.text.strip() if lesson_type else ""
                         teachers = []
