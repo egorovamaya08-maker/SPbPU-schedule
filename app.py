@@ -272,8 +272,7 @@ def parse_group_schedule(group_human: str, start_date: datetime, end_date: datet
     e = end_date.date() if isinstance(end_date, datetime) else end_date
 
     current = datetime.combine(s, datetime.min.time()) - timedelta(days=s.weekday())
-    if current.date() < s:
-        current += timedelta(weeks=1)
+
 
     week_dates = []
     tmp = current
@@ -361,8 +360,7 @@ def parse_teacher_schedule(teacher_name: str, start_date: datetime, end_date: da
     e = end_date.date() if isinstance(end_date, datetime) else end_date
 
     current = datetime.combine(s, datetime.min.time()) - timedelta(days=s.weekday())
-    if current.date() < s:
-        current += timedelta(weeks=1)
+
 
     week_dates = []
     tmp = current
