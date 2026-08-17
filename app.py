@@ -348,7 +348,7 @@ def parse_group_schedule(group_human: str, start_date: datetime, end_date: datet
                                   "Время": time_str,
                                   "Дисциплина": subject,
                                   "Тип занятия": lesson_type,
-                                  "Преподаватель": ", ".join(teachers),
+                                  "Преподаватель": teacher_str,
                                   "Место": place,
                                   "Группа": group_human
                               })
