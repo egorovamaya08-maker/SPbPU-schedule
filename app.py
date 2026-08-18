@@ -617,8 +617,8 @@ def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
    # other_types = [c for c in cols if c not in fixed]
     other_types = []
       for t in preferred_type_order:
-          if t in cols and t not in fixed:
-              other_types.append(t)
+        if t in cols and t not in fixed:
+          other_types.append(t)
       
       for c in cols:
           if c not in fixed and c not in other_types:
