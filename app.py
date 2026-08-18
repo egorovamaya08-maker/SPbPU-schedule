@@ -594,6 +594,17 @@ def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
    
     result.insert(2, "Контроль", "")
 
+    preferred_type_order = [
+          "Лекции",
+          "Практика",
+          "Практическое занятие",
+          "Семинар",
+          "Консультация",
+          "Экзамен",
+          "Зачёт",
+          "Зачет",
+      ]
+
   
     cols = result.columns.tolist()
 
@@ -603,7 +614,15 @@ def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
         cols.remove("Место")
    
     fixed = ["Группа", "Дисциплина", "Контроль"]
-    other_types = [c for c in cols if c not in fixed]
+   # other_types = [c for c in cols if c not in fixed]
+    other_types = []
+      for t in preferred_type_order:
+          if t in cols and t not in fixed:
+              other_types.append(t)
+      
+      for c in cols:
+          if c not in fixed and c not in other_types:
+              other_types.append(c)
     
     final_cols = fixed + other_types + ["Преподаватель", "Место"]
 
@@ -1143,7 +1162,7 @@ with tab5:
 
         if st.session_state.mass_excel is not None:
             st.download_button(
-                label="📥 Скачать Excel (Группы + Преподаватели + Отчет)",
+                label="📥 Скачать Excel",
                 data=st.session_state.mass_excel,
                 file_name=f"mass_schedule_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
