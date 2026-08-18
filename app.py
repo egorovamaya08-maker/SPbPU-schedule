@@ -612,27 +612,26 @@ def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
         cols.remove("Преподаватель")
     if "Место" in cols:
         cols.remove("Место")
-   
-    fixed = ["Группа", "Дисциплина", "Контроль"]
-   # other_types = [c for c in cols if c not in fixed]
-    other_types = []
-      for t in preferred_type_order:
-        if t in cols and t not in fixed:
-          other_types.append(t)
-      
-      for c in cols:
-          if c not in fixed and c not in other_types:
-              other_types.append(c)
-    
-    final_cols = fixed + other_types + ["Преподаватель", "Место"]
 
+    fixed = ["Группа", "Дисциплина", "Контроль"]
+    
+    # Сначала берём типы в предпочтительном порядке, потом все остальные
+    other_types = []
+    for t in preferred_type_order:
+        if t in cols and t not in fixed:
+            other_types.append(t)
+    # Добавляем всё, чего нет в preferred_type_order
+    for c in cols:
+        if c not in fixed and c not in other_types:
+            other_types.append(c)
+   
+    final_cols = fixed + other_types + ["Преподаватель", "Место"]
     final_cols = [c for c in final_cols if c in result.columns]
     result = result[final_cols]
-
-  
+ 
     result.rename(columns={"Место": "Формат занятий"}, inplace=True)
-
     return result
+
 
 
 def prepare_sorted_raw_sheets(
