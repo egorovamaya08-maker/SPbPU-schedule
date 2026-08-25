@@ -7,7 +7,7 @@ import time
 import re
 import io
 
-st.set_page_config(page_title="RUZ Planner", layout="wide")
+st.set_page_config(page_title="Schedule", layout="wide")
 st.title("📅 Расписание")
 
 GROUP_MAP = {
@@ -322,6 +322,24 @@ def parse_place(place_element):
     parts = [p.strip() for p in text.split(',') if p.strip()]
     return ', '.join(dict.fromkeys(parts))
 
+
+
+def parse_sdo_links(lesson_element):
+    
+    if not lesson_element:
+        return ""
+    resource_div = lesson_element.find('div', class_='lesson__resource_links')
+    if not resource_div:
+        return ""
+    links = []
+    for a in resource_div.find_all('a', class_='lesson__link'):
+        href = a.get('href', '').strip()
+        if href:
+           
+            href = href.replace('//', '/').replace('https:/', 'https://')
+            links.append(href)
+    return "; ".join(links) if links else ""
+
 def parse_ruz_date_to_date(date_text: str, year: int = 2026) -> date | None:
 
     if not date_text:
@@ -444,7 +462,8 @@ def parse_group_schedule(group_human: str, start_date: datetime, end_date: datet
                               "Тип занятия": lesson_type,
                               "Преподаватель": teacher_str,
                               "Место": place,
-                              "Группа": group_human
+                              "Группа": group_human,
+                            "СДО": parse_sdo_links(lesson)
                           })
 
           
@@ -561,7 +580,8 @@ def parse_teacher_schedule(teacher_name: str, start_date: datetime, end_date: da
                                 "Тип занятия": lesson_type,
                                 "Группы": ', '.join(groups),
                                 "Преподаватель": teacher_name_to_save, 
-                                "Место": place
+                                "Место": place,
+                              "СДО": parse_sdo_links(lesson)
                             })
 
 
@@ -667,6 +687,7 @@ def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
       #  "Преподаватель": lambda x: ", ".join(sorted(set(x.dropna()))),
         "Преподаватель": combine_teachers,
         "Место": lambda x: ", ".join(sorted(set(x.dropna()))),
+      "СДО": lambda x: "; ".join(sorted(set(str(v).strip() for v in x.dropna() if str(v).strip()))),
         "Тип занятия": lambda x: x.value_counts().to_dict()  # временный словарь
     }
     grouped = df.groupby(["Группа", "Дисциплина"], as_index=False).agg(agg_dict)
@@ -702,12 +723,12 @@ def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
 
     fixed = ["Группа", "Дисциплина", "Контроль"]
     
-    # Сначала берём типы в предпочтительном порядке, потом все остальные
+    
     other_types = []
     for t in preferred_type_order:
         if t in cols and t not in fixed:
             other_types.append(t)
-    # Добавляем всё, чего нет в preferred_type_order
+   
     for c in cols:
         if c not in fixed and c not in other_types:
             other_types.append(c)
@@ -717,6 +738,11 @@ def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
     result = result[final_cols]
  
     result.rename(columns={"Место": "Формат занятий"}, inplace=True)
+
+    if "СДО" in result.columns:
+      cols = [c for c in result.columns if c != "СДО"] + ["СДО"]
+      result = result[cols]
+    
     return result
 
 
@@ -763,7 +789,7 @@ def prepare_sorted_raw_sheets(
         )
         gdf = gdf.drop(columns=["_dt"], errors="ignore")
 
-        preferred = ["Группа", "Дата", "Время", "Дисциплина", "Тип занятия", "Преподаватель", "Место"]
+        preferred = ["Группа", "Дата", "Время", "Дисциплина", "Тип занятия", "Преподаватель", "Место", "СДО"]
         cols = [c for c in preferred if c in gdf.columns] + [
             c for c in gdf.columns if c not in preferred and c not in ("Группы",)
         ]
@@ -848,7 +874,7 @@ def prepare_sorted_raw_sheets(
         
         tdf = tdf.drop(columns=["_dt"], errors="ignore")
 
-        preferred = ["Преподаватель", "Дата", "Время", "Дисциплина", "Тип занятия", "Группы", "Место"]
+        preferred = ["Преподаватель", "Дата", "Время", "Дисциплина", "Тип занятия", "Группы", "Место", "СДО"]
         cols = [c for c in preferred if c in tdf.columns] + [
             c for c in tdf.columns if c not in preferred and c != "Группа"
         ]
