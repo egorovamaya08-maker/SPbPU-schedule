@@ -1225,207 +1225,6 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📥 Выгрузка всего и сразу (тест)",
 ])
 
-with tab2:
-    st.subheader("🔍 Свободные окна")
-    st.markdown(
-        "Находит временные промежутки между занятиями, в которые можно поставить или перенести пару."
-    )
-
-    col_g, col_t = st.columns(2)
-    with col_g:
-        win_groups = st.multiselect("Группы", options=sorted(GROUP_MAP.keys()), key="win_groups")
-    with col_t:
-        win_teachers = st.multiselect("Преподаватели", options=sorted(TEACHER_MAP.keys()), key="win_teachers")
-
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        win_start = st.date_input("Начало периода", datetime(2026, 2, 1).date(), key="win_start")
-    with col_d2:
-        win_end = st.date_input("Конец периода", datetime(2026, 5, 25).date(), key="win_end")
-
-    col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
-    with col_cfg1:
-        duration_options = {"30 мин": 30, "45 мин": 45, "1 час": 60, "1.5 часа": 90, "2 часа": 120}
-        dur_label = st.selectbox("Мин. длительность окна", list(duration_options.keys()), key="win_dur")
-        min_duration_val = duration_options[dur_label]
-    with col_cfg2:
-        win_weekdays = st.checkbox("Только будни", value=True, key="win_weekdays")
-    with col_cfg3:
-        win_mode = st.radio("Режим поиска", ["Все свободны", "Минимум N из M"], horizontal=True, key="win_mode")
-
-    all_win_participants = win_groups + win_teachers
-
-    if win_mode == "Минимум N из M":
-        max_n = max(len(all_win_participants), 1)
-        default_n = max(1, len(all_win_participants) - 1)
-        win_min_free = st.number_input(
-            "Минимум свободных участников (N)",
-            min_value=1, max_value=max_n, value=default_n, step=1, key="win_n"
-        )
-    else:
-        win_min_free = len(all_win_participants)
-
-    win_required = st.multiselect(
-        "Обязательные участники (всегда должны быть свободны)",
-        options=all_win_participants,
-        key="win_required"
-    )
-
-    if st.button("🔎 Найти свободные окна", type="primary", key="win_search"):
-        if not win_groups and not win_teachers:
-            st.warning("Выберите хотя бы одну группу или преподавателя")
-        elif win_start > win_end:
-            st.warning("Дата начала не может быть позже даты окончания")
-        else:
-            with st.spinner("Загрузка расписаний..."):
-                all_schedules = {}
-                total = len(win_groups) + len(win_teachers)
-                progress = st.progress(0, text="0%") if total > 0 else None
-                done = 0
-
-                for g in win_groups:
-                    try:
-                        df = parse_group_schedule(g, win_start, win_end, show_progress=False)
-                        if not df.empty:
-                            all_schedules[g] = add_parsed_date(df)
-                        else:
-                            all_schedules[g] = add_parsed_date(df)
-                    except Exception as e:
-                        st.warning(f"Ошибка загрузки группы {g}: {e}")
-                    done += 1
-                    if progress:
-                        progress.progress(done / total, text=f"{int(done/total*100)}%")
-
-                for t in win_teachers:
-                    try:
-                        df = parse_teacher_schedule(t, win_start, win_end, show_progress=False)
-                        if not df.empty:
-                            all_schedules[t] = add_parsed_date(df)
-                        else:
-                            all_schedules[t] = add_parsed_date(df)
-                    except Exception as e:
-                        st.warning(f"Ошибка загрузки преподавателя {t}: {e}")
-                    done += 1
-                    if progress:
-                        progress.progress(done / total, text=f"{int(done/total*100)}%")
-
-                if progress:
-                    progress.empty()
-
-            with st.spinner("Поиск окон..."):
-                min_duration_td = timedelta(minutes=min_duration_val)
-                mode_code = "hard" if win_mode == "Все свободны" else "soft"
-                windows = find_common_free_windows(
-                    all_schedules,
-                    all_win_participants,
-                    win_start,
-                    win_end,
-                    min_duration_td,
-                    win_weekdays,
-                    mode_code,
-                    win_min_free,
-                    set(win_required)
-                )
-
-            if not windows:
-                st.info("Свободных окон, удовлетворяющих условиям, не найдено.")
-            else:
-                st.success(f"Найдено {len(windows)} свободных окон")
-
-                from collections import defaultdict
-                by_day = defaultdict(list)
-                for w in windows:
-                    by_day[w['date']].append(w)
-
-                export_rows = []
-                weekday_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-
-                for day, day_windows in sorted(by_day.items()):
-                    day_str = day.strftime("%d.%m.%Y")
-                    wday = weekday_names[day.weekday()]
-                    expander_label = f"📅 {day_str} ({wday}) — {len(day_windows)} окон"
-
-                    with st.expander(expander_label, expanded=(len(by_day) <= 3)):
-                        for w in day_windows:
-                            nice_s = w['nice_start'].strftime("%H:%M")
-                            nice_e = w['nice_end'].strftime("%H:%M")
-                            real_s = w['real_start'].strftime("%H:%M")
-                            real_e = w['real_end'].strftime("%H:%M")
-
-                            if w['free_count'] == w['total_count']:
-                                icon = "🟢"
-                                status_text = f"Свободны: все ({w['total_count']} из {w['total_count']})"
-                            else:
-                                icon = "🟡"
-                                status_text = f"Свободны: {w['free_count']} из {w['total_count']}"
-
-                            st.markdown(f"**{icon} Окно {nice_s} – {nice_e}**")
-                            st.caption(f"Реальный промежуток: {real_s} – {real_e}")
-                            st.write(status_text)
-
-                            if w['busy_participants']:
-                                busy_details = []
-                                for bp in w['busy_participants']:
-                                    df_bp = all_schedules.get(bp)
-                                    if df_bp is not None and not df_bp.empty and 'Дата_parsed' in df_bp.columns:
-                                        day_df = df_bp[df_bp['Дата_parsed'] == day]
-                                        for _, row in day_df.iterrows():
-                                            t_s, t_e = parse_lesson_time(row['Время'])
-                                            if t_s and t_e:
-                                                dt_s = datetime.combine(day, t_s)
-                                                dt_e = datetime.combine(day, t_e)
-                                                if dt_s < w['real_end'] and dt_e > w['real_start']:
-                                                    subject = row['Дисциплина']
-                                                    place = row.get('Место', 'Не указано')
-                                                    if 'Группа' in row and pd.notna(row['Группа']) and str(row['Группа']).strip():
-                                                        teacher = row.get('Преподаватель', 'Не указано')
-                                                        busy_details.append(f"**{bp}**: {row['Время']} {subject} ({teacher}) · {place}")
-                                                    else:
-                                                        groups = row.get('Группы', 'Не указано')
-                                                        busy_details.append(f"**{bp}**: {row['Время']} {subject} (гр. {groups}) · {place}")
-                                                    break
-                                if busy_details:
-                                    st.write("**Заняты:**")
-                                    for bd in busy_details:
-                                        st.write(f"- {bd}")
-
-                            # Таблица контекста
-                            ctx_rows = []
-                            for p in all_win_participants:
-                                df_p = all_schedules.get(p)
-                                before = get_lesson_context(df_p, day, w['real_start'], 'before')
-                                after = get_lesson_context(df_p, day, w['real_end'], 'after')
-                                label = f"Группа {p}" if p in win_groups else f"Преподаватель {p}"
-                                ctx_rows.append({"Участник": label, "До окна": before, "После окна": after})
-
-                            st.dataframe(pd.DataFrame(ctx_rows), use_container_width=True, hide_index=True)
-                            st.divider()
-
-                            export_rows.append({
-                                "Дата": day_str,
-                                "День недели": wday,
-                                "Удобное начало": nice_s,
-                                "Удобное окончание": nice_e,
-                                "Реальное начало": real_s,
-                                "Реальное окончание": real_e,
-                                "Свободных": w['free_count'],
-                                "Всего участников": w['total_count'],
-                                "Статус": "Все свободны" if w['free_count'] == w['total_count'] else f"{w['free_count']} из {w['total_count']}",
-                                "Заняты": ", ".join(w['busy_participants']) if w['busy_participants'] else ""
-                            })
-
-                if export_rows:
-                    exp_df = pd.DataFrame(export_rows)
-                    out = io.BytesIO()
-                    with pd.ExcelWriter(out, engine="openpyxl") as writer:
-                        exp_df.to_excel(writer, sheet_name="Свободные окна", index=False)
-                    st.download_button(
-                        label="📥 Экспорт найденных окон в Excel",
-                        data=out.getvalue(),
-                        file_name=f"free_windows_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
 
 with tab1:
     st.subheader("📥 Вывод расписания")
@@ -1761,3 +1560,207 @@ with tab5:
             st.session_state.mass_result = None
             st.session_state.mass_excel = None
             st.rerun()
+
+
+
+with tab2:
+    st.subheader("🔍 Свободные окна")
+    st.markdown(
+        "Находит временные промежутки между занятиями, в которые можно поставить или перенести пару."
+    )
+
+    col_g, col_t = st.columns(2)
+    with col_g:
+        win_groups = st.multiselect("Группы", options=sorted(GROUP_MAP.keys()), key="win_groups")
+    with col_t:
+        win_teachers = st.multiselect("Преподаватели", options=sorted(TEACHER_MAP.keys()), key="win_teachers")
+
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        win_start = st.date_input("Начало периода", datetime(2026, 2, 1).date(), key="win_start")
+    with col_d2:
+        win_end = st.date_input("Конец периода", datetime(2026, 5, 25).date(), key="win_end")
+
+    col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
+    with col_cfg1:
+        duration_options = {"30 мин": 30, "45 мин": 45, "1 час": 60, "1.5 часа": 90, "2 часа": 120}
+        dur_label = st.selectbox("Мин. длительность окна", list(duration_options.keys()), key="win_dur")
+        min_duration_val = duration_options[dur_label]
+    with col_cfg2:
+        win_weekdays = st.checkbox("Только будни", value=True, key="win_weekdays")
+    with col_cfg3:
+        win_mode = st.radio("Режим поиска", ["Все свободны", "Минимум N из M"], horizontal=True, key="win_mode")
+
+    all_win_participants = win_groups + win_teachers
+
+    if win_mode == "Минимум N из M":
+        max_n = max(len(all_win_participants), 1)
+        default_n = max(1, len(all_win_participants) - 1)
+        win_min_free = st.number_input(
+            "Минимум свободных участников (N)",
+            min_value=1, max_value=max_n, value=default_n, step=1, key="win_n"
+        )
+    else:
+        win_min_free = len(all_win_participants)
+
+    win_required = st.multiselect(
+        "Обязательные участники (всегда должны быть свободны)",
+        options=all_win_participants,
+        key="win_required"
+    )
+
+    if st.button("🔎 Найти свободные окна", type="primary", key="win_search"):
+        if not win_groups and not win_teachers:
+            st.warning("Выберите хотя бы одну группу или преподавателя")
+        elif win_start > win_end:
+            st.warning("Дата начала не может быть позже даты окончания")
+        else:
+            with st.spinner("Загрузка расписаний..."):
+                all_schedules = {}
+                total = len(win_groups) + len(win_teachers)
+                progress = st.progress(0, text="0%") if total > 0 else None
+                done = 0
+
+                for g in win_groups:
+                    try:
+                        df = parse_group_schedule(g, win_start, win_end, show_progress=False)
+                        if not df.empty:
+                            all_schedules[g] = add_parsed_date(df)
+                        else:
+                            all_schedules[g] = add_parsed_date(df)
+                    except Exception as e:
+                        st.warning(f"Ошибка загрузки группы {g}: {e}")
+                    done += 1
+                    if progress:
+                        progress.progress(done / total, text=f"{int(done/total*100)}%")
+
+                for t in win_teachers:
+                    try:
+                        df = parse_teacher_schedule(t, win_start, win_end, show_progress=False)
+                        if not df.empty:
+                            all_schedules[t] = add_parsed_date(df)
+                        else:
+                            all_schedules[t] = add_parsed_date(df)
+                    except Exception as e:
+                        st.warning(f"Ошибка загрузки преподавателя {t}: {e}")
+                    done += 1
+                    if progress:
+                        progress.progress(done / total, text=f"{int(done/total*100)}%")
+
+                if progress:
+                    progress.empty()
+
+            with st.spinner("Поиск окон..."):
+                min_duration_td = timedelta(minutes=min_duration_val)
+                mode_code = "hard" if win_mode == "Все свободны" else "soft"
+                windows = find_common_free_windows(
+                    all_schedules,
+                    all_win_participants,
+                    win_start,
+                    win_end,
+                    min_duration_td,
+                    win_weekdays,
+                    mode_code,
+                    win_min_free,
+                    set(win_required)
+                )
+
+            if not windows:
+                st.info("Свободных окон, удовлетворяющих условиям, не найдено.")
+            else:
+                st.success(f"Найдено {len(windows)} свободных окон")
+
+                from collections import defaultdict
+                by_day = defaultdict(list)
+                for w in windows:
+                    by_day[w['date']].append(w)
+
+                export_rows = []
+                weekday_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+
+                for day, day_windows in sorted(by_day.items()):
+                    day_str = day.strftime("%d.%m.%Y")
+                    wday = weekday_names[day.weekday()]
+                    expander_label = f"📅 {day_str} ({wday}) — {len(day_windows)} окон"
+
+                    with st.expander(expander_label, expanded=(len(by_day) <= 3)):
+                        for w in day_windows:
+                            nice_s = w['nice_start'].strftime("%H:%M")
+                            nice_e = w['nice_end'].strftime("%H:%M")
+                            real_s = w['real_start'].strftime("%H:%M")
+                            real_e = w['real_end'].strftime("%H:%M")
+
+                            if w['free_count'] == w['total_count']:
+                                icon = "🟢"
+                                status_text = f"Свободны: все ({w['total_count']} из {w['total_count']})"
+                            else:
+                                icon = "🟡"
+                                status_text = f"Свободны: {w['free_count']} из {w['total_count']}"
+
+                            st.markdown(f"**{icon} Окно {nice_s} – {nice_e}**")
+                            st.caption(f"Реальный промежуток: {real_s} – {real_e}")
+                            st.write(status_text)
+
+                            if w['busy_participants']:
+                                busy_details = []
+                                for bp in w['busy_participants']:
+                                    df_bp = all_schedules.get(bp)
+                                    if df_bp is not None and not df_bp.empty and 'Дата_parsed' in df_bp.columns:
+                                        day_df = df_bp[df_bp['Дата_parsed'] == day]
+                                        for _, row in day_df.iterrows():
+                                            t_s, t_e = parse_lesson_time(row['Время'])
+                                            if t_s and t_e:
+                                                dt_s = datetime.combine(day, t_s)
+                                                dt_e = datetime.combine(day, t_e)
+                                                if dt_s < w['real_end'] and dt_e > w['real_start']:
+                                                    subject = row['Дисциплина']
+                                                    place = row.get('Место', 'Не указано')
+                                                    if 'Группа' in row and pd.notna(row['Группа']) and str(row['Группа']).strip():
+                                                        teacher = row.get('Преподаватель', 'Не указано')
+                                                        busy_details.append(f"**{bp}**: {row['Время']} {subject} ({teacher}) · {place}")
+                                                    else:
+                                                        groups = row.get('Группы', 'Не указано')
+                                                        busy_details.append(f"**{bp}**: {row['Время']} {subject} (гр. {groups}) · {place}")
+                                                    break
+                                if busy_details:
+                                    st.write("**Заняты:**")
+                                    for bd in busy_details:
+                                        st.write(f"- {bd}")
+
+                            # Таблица контекста
+                            ctx_rows = []
+                            for p in all_win_participants:
+                                df_p = all_schedules.get(p)
+                                before = get_lesson_context(df_p, day, w['real_start'], 'before')
+                                after = get_lesson_context(df_p, day, w['real_end'], 'after')
+                                label = f"Группа {p}" if p in win_groups else f"Преподаватель {p}"
+                                ctx_rows.append({"Участник": label, "До окна": before, "После окна": after})
+
+                            st.dataframe(pd.DataFrame(ctx_rows), use_container_width=True, hide_index=True)
+                            st.divider()
+
+                            export_rows.append({
+                                "Дата": day_str,
+                                "День недели": wday,
+                                "Удобное начало": nice_s,
+                                "Удобное окончание": nice_e,
+                                "Реальное начало": real_s,
+                                "Реальное окончание": real_e,
+                                "Свободных": w['free_count'],
+                                "Всего участников": w['total_count'],
+                                "Статус": "Все свободны" if w['free_count'] == w['total_count'] else f"{w['free_count']} из {w['total_count']}",
+                                "Заняты": ", ".join(w['busy_participants']) if w['busy_participants'] else ""
+                            })
+
+                if export_rows:
+                    exp_df = pd.DataFrame(export_rows)
+                    out = io.BytesIO()
+                    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+                        exp_df.to_excel(writer, sheet_name="Свободные окна", index=False)
+                    st.download_button(
+                        label="📥 Экспорт найденных окон в Excel",
+                        data=out.getvalue(),
+                        file_name=f"free_windows_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
