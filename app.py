@@ -930,9 +930,10 @@ def parse_lesson_time(time_str):
     if len(parts) != 2:
         return None, None
     try:
+        from datetime import time as dt_time
         h1, m1 = map(int, parts[0].strip().split(':'))
         h2, m2 = map(int, parts[1].strip().split(':'))
-        return datetime.time(h1, m1), datetime.time(h2, m2)
+        return dt_time(h1, m1), dt_time(h2, m2)
     except Exception:
         return None, None
 
@@ -976,6 +977,8 @@ def get_busy_intervals_for_day(lessons_df, day_date, work_start=None, work_end=N
             merged[-1][1] = max(merged[-1][1], e)
 
     # Ограничиваем рабочим днём
+   
+    
     day_start = datetime.combine(day_date, work_start)
     day_end = datetime.combine(day_date, work_end)
     result = []
@@ -1008,8 +1011,9 @@ def find_common_free_windows(all_schedules, participants, start_date, end_date,
 
         # Собираем все граничные точки
         all_points = set()
-        day_start = datetime.combine(current, datetime.time(10, 0))
-        day_end = datetime.combine(current, datetime.time(20, 0))
+        from datetime import time as dt_time
+        day_start = datetime.combine(current, dt_time(10, 0))
+        day_end = datetime.combine(current, dt_time(20, 0))
         all_points.add(day_start)
         all_points.add(day_end)
 
