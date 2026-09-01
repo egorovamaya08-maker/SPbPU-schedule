@@ -992,8 +992,11 @@ def add_parsed_date(df):
     return df
 
 
-def get_busy_intervals_for_day(lessons_df, day_date, work_start=datetime.time(10, 0), work_end=time(20, 0)):
-    
+def get_busy_intervals_for_day(lessons_df, day_date, work_start=None, work_end=None):
+    if work_start is None:
+        work_start = datetime.time(10, 0)
+    if work_end is None:
+        work_end = datetime.time(20, 0)
     if lessons_df is None or lessons_df.empty:
         return []
     if 'Дата_parsed' not in lessons_df.columns:
