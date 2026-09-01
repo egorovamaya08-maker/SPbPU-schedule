@@ -954,7 +954,7 @@ def parse_lesson_time(time_str):
     try:
         h1, m1 = map(int, parts[0].strip().split(':'))
         h2, m2 = map(int, parts[1].strip().split(':'))
-        return time(h1, m1), time(h2, m2)
+        return datetime.time(h1, m1), datetime.time(h2, m2)
     except Exception:
         return None, None
 
@@ -1110,8 +1110,8 @@ def find_common_free_windows(all_schedules, participants, start_date, end_date,
 
         # Собираем все граничные точки
         all_points = set()
-        day_start = datetime.combine(current, time(10, 0))
-        day_end = datetime.combine(current, time(20, 0))
+        day_start = datetime.combine(current, datetime.time(10, 0))
+        day_end = datetime.combine(current, datetime.time(20, 0))
         all_points.add(day_start)
         all_points.add(day_end)
 
