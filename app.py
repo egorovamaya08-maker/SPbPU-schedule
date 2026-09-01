@@ -992,8 +992,8 @@ def add_parsed_date(df):
     return df
 
 
-def get_busy_intervals_for_day(lessons_df, day_date, work_start=time(10, 0), work_end=time(20, 0)):
-    """Возвращает список занятых интервалов [(start_dt, end_dt), ...] за день"""
+def get_busy_intervals_for_day(lessons_df, day_date, work_start=datetime.time(10, 0), work_end=time(20, 0)):
+    
     if lessons_df is None or lessons_df.empty:
         return []
     if 'Дата_parsed' not in lessons_df.columns:
@@ -1214,19 +1214,19 @@ def get_lesson_context(lessons_df, day_date, window_time, position='before'):
         groups = row.get('Группы', 'Не указано')
         return f"{time_str} {subject} (гр. {groups}) · {place}"
 
-tab1, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📥 Вывод расписания",
-   
+    "🔍 Свободные окна",
     "📊 Статистика",
     "⚖️ Планирование ГИА",
     "📥 Выгрузка всего и сразу (тест)",
-   "🔍 Свободные окна",
 ])
 
-
-with tab6:
+with tab2:
     st.subheader("🔍 Свободные окна")
-    st.markdown("Находит временные промежутки между занятиями, в которые можно поставить или перенести пару.")
+    st.markdown(
+        "Находит временные промежутки между занятиями, в которые можно поставить или перенести пару."
+    )
 
     col_g, col_t = st.columns(2)
     with col_g:
