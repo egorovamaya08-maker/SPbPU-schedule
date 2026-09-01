@@ -943,6 +943,15 @@ def build_summary_report(combined_df, selected_groups, selected_teachers, start_
     ]
     return pd.DataFrame(rows)
 
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📥 Вывод расписания",
+    "🔍 Свободные окна",
+    "📊 Статистика",
+    "⚖️ Планирование ГИА",
+    "📥 Выгрузка всего и сразу (тест)",
+])
+
 def parse_lesson_time(time_str):
     """Парсит строку времени '10:00–11:40' в (time_start, time_end)"""
     if not time_str or not isinstance(time_str, str):
@@ -1217,13 +1226,7 @@ def get_lesson_context(lessons_df, day_date, window_time, position='before'):
         groups = row.get('Группы', 'Не указано')
         return f"{time_str} {subject} (гр. {groups}) · {place}"
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📥 Вывод расписания",
-    "🔍 Свободные окна",
-    "📊 Статистика",
-    "⚖️ Планирование ГИА",
-    "📥 Выгрузка всего и сразу (тест)",
-])
+
 
 
 with tab1:
