@@ -1066,7 +1066,135 @@ def find_common_free_windows(all_schedules, participants, start_date, end_date,
 
     return results
 
+def ceil_hour(dt):
+    """Округляет datetime вверх до ближайшего целого часа"""
+    if dt.minute == 0 and dt.second == 0 and dt.microsecond == 0:
+        return dt
+    return dt.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
 
+
+def floor_hour(dt):
+    """Округляет datetime вниз до ближайшего целого часа"""
+    return dt.replace(minute=0, second=0, microsecond=0)
+
+
+def add_parsed_date(df):
+    """Добавляет колонку Дата_parsed к датафрейму расписания"""
+    if df is None or df.empty or 'Дата_parsed' in df.columns:
+        return df
+    df = df.copy()
+
+    def _try_parse(x):
+        d = parse_ruz_date_to_date(x, 2026)
+        if d is not None:
+            return d
+        for fmt in ("%d.%m.%Y", "%d.%m.%y"):
+            try:
+                return datetime.strptime(str(x).strip(), fmt).date()
+            except ValueError:
+                pass
+        return None
+
+    df['Дата_parsed'] = df['Дата'].apply(_try_parse)
+    return df
+
+
+def merge_valid_segments(segments, min_duration_td):
+    """Объединяет соседние валидные сегменты с одинаковым набором занятых участников"""
+    if not segments:
+        return []
+
+    segments = sorted(segments, key=lambda x: x['seg_start'])
+    merged = []
+    current = {
+        'seg_start': segments[0]['seg_start'],
+        'seg_end': segments[0]['seg_end'],
+        'free_count': segments[0]['free_count'],
+        'busy_participants': set(segments[0]['busy_participants']),
+    }
+
+    for seg in segments[1:]:
+        busy_set = set(seg['busy_participants'])
+        if seg['seg_start'] == current['seg_end'] and busy_set == current['busy_participants']:
+            current['seg_end'] = seg['seg_end']
+        else:
+            nice_start = ceil_hour(current['seg_start'])
+            nice_end = floor_hour(current['seg_end'])
+            if nice_start < nice_end and (nice_end - nice_start) >= min_duration_td:
+                merged.append({
+                    'real_start': current['seg_start'],
+                    'real_end': current['seg_end'],
+                    'nice_start': nice_start,
+                    'nice_end': nice_end,
+                    'free_count': current['free_count'],
+                    'busy_participants': sorted(current['busy_participants']),
+                })
+            current = {
+                'seg_start': seg['seg_start'],
+                'seg_end': seg['seg_end'],
+                'free_count': seg['free_count'],
+                'busy_participants': busy_set,
+            }
+
+    nice_start = ceil_hour(current['seg_start'])
+    nice_end = floor_hour(current['seg_end'])
+    if nice_start < nice_end and (nice_end - nice_start) >= min_duration_td:
+        merged.append({
+            'real_start': current['seg_start'],
+            'real_end': current['seg_end'],
+            'nice_start': nice_start,
+            'nice_end': nice_end,
+            'free_count': current['free_count'],
+            'busy_participants': sorted(current['busy_participants']),
+        })
+
+    return merged
+
+
+def get_lesson_context(lessons_df, day_date, window_time, position='before'):
+    """Возвращает строку с ближайшим занятием до или после окна"""
+    if lessons_df is None or lessons_df.empty:
+        return "нет занятий в этот день"
+    if 'Дата_parsed' not in lessons_df.columns:
+        return "нет занятий в этот день"
+
+    day_lessons = lessons_df[lessons_df['Дата_parsed'] == day_date]
+    if day_lessons.empty:
+        return "нет занятий в этот день"
+
+    lessons_parsed = []
+    for _, row in day_lessons.iterrows():
+        t_start, t_end = parse_lesson_time(row['Время'])
+        if t_start and t_end:
+            dt_start = datetime.combine(day_date, t_start)
+            dt_end = datetime.combine(day_date, t_end)
+            lessons_parsed.append({'start': dt_start, 'end': dt_end, 'row': row})
+
+    if not lessons_parsed:
+        return "нет занятий в этот день"
+
+    if position == 'before':
+        candidates = [l for l in lessons_parsed if l['end'] <= window_time]
+        if not candidates:
+            return "нет занятий до окна"
+        closest = max(candidates, key=lambda x: x['end'])
+    else:
+        candidates = [l for l in lessons_parsed if l['start'] >= window_time]
+        if not candidates:
+            return "нет занятий после окна"
+        closest = min(candidates, key=lambda x: x['start'])
+
+    row = closest['row']
+    time_str = row['Время']
+    subject = row['Дисциплина']
+    place = row.get('Место', 'Не указано')
+
+    if 'Группа' in row and pd.notna(row['Группа']) and str(row['Группа']).strip():
+        teacher = row.get('Преподаватель', 'Не указано')
+        return f"{time_str} {subject} ({teacher}) · {place}"
+    else:
+        groups = row.get('Группы', 'Не указано')
+        return f"{time_str} {subject} (гр. {groups}) · {place}"
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📥 Вывод расписания",
