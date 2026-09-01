@@ -938,7 +938,8 @@ def parse_lesson_time(time_str):
 
 
 def get_busy_intervals_for_day(lessons_df, day_date, work_start=None, work_end=None):
-    """Возвращает список занятых интервалов [(start_dt, end_dt), ...] за день"""
+    from datetime import time as dt_time
+    
     if work_start is None:
         from datetime import time as dt_time
         work_start = dt_time(10, 0)
