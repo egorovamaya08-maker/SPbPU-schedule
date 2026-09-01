@@ -940,9 +940,11 @@ def parse_lesson_time(time_str):
 def get_busy_intervals_for_day(lessons_df, day_date, work_start=None, work_end=None):
     """Возвращает список занятых интервалов [(start_dt, end_dt), ...] за день"""
     if work_start is None:
-        work_start = datetime.time(10, 0)
+        from datetime import time as dt_time
+        work_start = dt_time(10, 0)
     if work_end is None:
-        work_end = datetime.time(20, 0)
+        from datetime import time as dt_time
+        work_end = dt_time(20, 0)
 
     if lessons_df is None or lessons_df.empty:
         return []
