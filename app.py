@@ -1214,16 +1214,17 @@ def get_lesson_context(lessons_df, day_date, window_time, position='before'):
         groups = row.get('Группы', 'Не указано')
         return f"{time_str} {subject} (гр. {groups}) · {place}"
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab3, tab4, tab5, tab6 = st.tabs([
     "📥 Вывод расписания",
-    "🔍 Свободные окна",
+   
     "📊 Статистика",
     "⚖️ Планирование ГИА",
-    "📥 Выгрузка всего и сразу (тест)"
+    "📥 Выгрузка всего и сразу (тест)",
+   "🔍 Свободные окна",
 ])
 
 
-with tab2:
+with tab6:
     st.subheader("🔍 Свободные окна")
     st.markdown("Находит временные промежутки между занятиями, в которые можно поставить или перенести пару.")
 
