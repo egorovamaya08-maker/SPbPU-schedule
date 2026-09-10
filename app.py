@@ -1694,7 +1694,8 @@ with tab5:
 
             if all_dfs:
                 combined = pd.concat(all_dfs, ignore_index=True)
-                      # Фильтр по выбранному времени начала пары
+
+                # Фильтр по выбранному времени начала пары
                 if selected_times:
                     def _matches_time(time_str):
                         t_start, _ = parse_lesson_time(time_str)
@@ -1714,41 +1715,41 @@ with tab5:
                     st.session_state.mass_excel = None
                     st.warning("После фильтра по времени не осталось ни одного занятия")
                 else:
-                  st.session_state.mass_result = combined      
-                  st.session_state.schedule_data = {
-                      f"Массовая выгрузка ({len(selected_groups)} гр. + {len(selected_teachers)} преп.)": combined
-                  }
-  
-                  groups_sheet, teachers_sheet = prepare_sorted_raw_sheets(
-                      combined,
-                      selected_groups=selected_groups,
-                      selected_teachers=selected_teachers,
-                  )
-                  summary_df = build_summary_report(
-                      combined,
-                      selected_groups=selected_groups,
-                      selected_teachers=selected_teachers,
-                      start_date=multi_start,
-                      end_date=multi_end,
-                  )
-                  export_df = prepare_export_dataframe(combined)
-  
-                  output = io.BytesIO()
-                  with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                      if not groups_sheet.empty:
-                          groups_sheet.to_excel(writer, sheet_name="Группы", index=False)
-                      if not teachers_sheet.empty:
-                          teachers_sheet.to_excel(writer, sheet_name="Преподаватели", index=False)
-                      if not summary_df.empty:
-                          summary_df.to_excel(writer, sheet_name="Отчет", index=False)
-                      if not export_df.empty:
-                          export_df.to_excel(writer, sheet_name="Сводка по дисциплинам", index=False)
-                  st.session_state.mass_excel = output.getvalue()
-                  st.success(f"✅ Всего собрано {len(combined)} занятий")
-              else:
-                  st.session_state.mass_result = None
-                  st.session_state.mass_excel = None
-                  st.warning("Не удалось загрузить ни одного расписания")
+                    st.session_state.mass_result = combined
+                    st.session_state.schedule_data = {
+                        f"Массовая выгрузка ({len(selected_groups)} гр. + {len(selected_teachers)} преп.)": combined
+                    }
+
+                    groups_sheet, teachers_sheet = prepare_sorted_raw_sheets(
+                        combined,
+                        selected_groups=selected_groups,
+                        selected_teachers=selected_teachers,
+                    )
+                    summary_df = build_summary_report(
+                        combined,
+                        selected_groups=selected_groups,
+                        selected_teachers=selected_teachers,
+                        start_date=multi_start,
+                        end_date=multi_end,
+                    )
+                    export_df = prepare_export_dataframe(combined)
+
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                        if not groups_sheet.empty:
+                            groups_sheet.to_excel(writer, sheet_name="Группы", index=False)
+                        if not teachers_sheet.empty:
+                            teachers_sheet.to_excel(writer, sheet_name="Преподаватели", index=False)
+                        if not summary_df.empty:
+                            summary_df.to_excel(writer, sheet_name="Отчет", index=False)
+                        if not export_df.empty:
+                            export_df.to_excel(writer, sheet_name="Сводка по дисциплинам", index=False)
+                    st.session_state.mass_excel = output.getvalue()
+                    st.success(f"✅ Всего собрано {len(combined)} занятий")
+            else:
+                st.session_state.mass_result = None
+                st.session_state.mass_excel = None
+                st.warning("Не удалось загрузить ни одного расписания")
 
    
     if st.session_state.mass_result is not None:
