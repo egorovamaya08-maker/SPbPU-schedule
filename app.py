@@ -687,6 +687,8 @@ def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
         "Место": lambda x: ", ".join(sorted(set(x.dropna()))),
         "Тип занятия": lambda x: x.value_counts().to_dict()  # временный словарь
     }
+    if "Ссылка" in df.columns:
+        agg_dict["Ссылка"] = combine_links
     grouped = df.groupby(["Группа", "Дисциплина"], as_index=False).agg(agg_dict)
 
 
@@ -731,6 +733,8 @@ def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
             other_types.append(c)
    
     final_cols = fixed + other_types + ["Преподаватель", "Место"]
+    if "Ссылка" in result.columns:
+          final_cols.append("Ссылка")          # ← последний столбец
     final_cols = [c for c in final_cols if c in result.columns]
     result = result[final_cols]
  
