@@ -322,6 +322,22 @@ def parse_place(place_element):
     parts = [p.strip() for p in text.split(',') if p.strip()]
     return ', '.join(dict.fromkeys(parts))
 
+def parse_sdo_link(lesson_element) -> str:
+    """Извлекает ссылку СДО из lesson__resource_links."""
+    if not lesson_element:
+        return ""
+    resource = lesson_element.find("div", class_="lesson__resource_links")
+    if not resource:
+        return ""
+    link = resource.find("a", class_="lesson__link", href=True)
+    if not link:
+        return ""
+    href = link.get("href", "").strip()
+    # Иногда в href бывает двойной слеш — нормализуем
+    if href.startswith("https://dl-imet.spbstu.ru//"):
+        href = href.replace("https://dl-imet.spbstu.ru//", "https://dl-imet.spbstu.ru/", 1)
+    return href
+
 def parse_ruz_date_to_date(date_text: str, year: int = 2026) -> date | None:
 
     if not date_text:
@@ -444,7 +460,8 @@ def parse_group_schedule(group_human: str, start_date: datetime, end_date: datet
                               "Тип занятия": lesson_type,
                               "Преподаватель": teacher_str,
                               "Место": place,
-                              "Группа": group_human
+                              "Группа": group_human,
+                            "Ссылка": parse_sdo_link(lesson),
                           })
 
           
@@ -561,7 +578,8 @@ def parse_teacher_schedule(teacher_name: str, start_date: datetime, end_date: da
                                 "Тип занятия": lesson_type,
                                 "Группы": ', '.join(groups),
                                 "Преподаватель": teacher_name_to_save, 
-                                "Место": place
+                                "Место": place,
+                              "Ссылка": parse_sdo_link(lesson),
                             })
 
 
