@@ -661,87 +661,66 @@ def combine_teachers(x):
     return ", ".join(teachers) if teachers else "Не указано"
 
 def prepare_export_dataframe(combined_df: pd.DataFrame) -> pd.DataFrame:
-  
     if combined_df.empty:
         return pd.DataFrame()
 
     df = combined_df.copy()
 
-
+    # Нормализация групп
     if "Группы" in df.columns and "Группа" not in df.columns:
-
         df["Группа"] = df["Группы"].str.split(r',\s*')
         df = df.explode("Группа")
     elif "Группа" not in df.columns:
-
         return pd.DataFrame()
 
-  
- 
     df["Тип занятия"] = df["Тип занятия"].str.strip()
 
+    # --- агрегация ---
+    def combine_links(x):
+        links = sorted({str(u).strip() for u in x.dropna() if str(u).strip()})
+        return ", ".join(links) if links else ""
+
     agg_dict = {
-      #"Преподаватель": lambda x: ", ".join(sorted([str(n).strip() for n in set(x.dropna()) if str(n).strip() != "Не указано"])),
-      #  "Преподаватель": lambda x: ", ".join(sorted(set(x.dropna()))),
         "Преподаватель": combine_teachers,
         "Место": lambda x: ", ".join(sorted(set(x.dropna()))),
-        "Тип занятия": lambda x: x.value_counts().to_dict()  # временный словарь
+        "Тип занятия": lambda x: x.value_counts().to_dict(),
     }
+
+    # Если столбец Ссылка есть — добавляем его в агрегацию
     if "Ссылка" in df.columns:
         agg_dict["Ссылка"] = combine_links
+
     grouped = df.groupby(["Группа", "Дисциплина"], as_index=False).agg(agg_dict)
 
-
     type_counts = grouped["Тип занятия"].apply(pd.Series).fillna(0).astype(int)
-
     grouped = grouped.drop(columns=["Тип занятия"])
-   
     result = pd.concat([grouped, type_counts], axis=1)
 
-   
     result.insert(2, "Контроль", "")
 
     preferred_type_order = [
-          "Лекции",
-          "Практика",
-          "Практическое занятие",
-          "Семинар",
-          "Консультация",
-          "Экзамен",
-          "Зачёт",
-          "Зачет",
-      ]
+        "Лекции", "Практика", "Практическое занятие", "Семинар",
+        "Консультация", "Экзамен", "Зачёт", "Зачет",
+    ]
 
-  
     cols = result.columns.tolist()
-
-    if "Преподаватель" in cols:
-        cols.remove("Преподаватель")
-    if "Место" in cols:
-        cols.remove("Место")
+    for c in ("Преподаватель", "Место", "Ссылка"):
+        if c in cols:
+            cols.remove(c)
 
     fixed = ["Группа", "Дисциплина", "Контроль"]
-    
-    # Сначала берём типы в предпочтительном порядке, потом все остальные
-    other_types = []
-    for t in preferred_type_order:
-        if t in cols and t not in fixed:
-            other_types.append(t)
-    # Добавляем всё, чего нет в preferred_type_order
-    for c in cols:
-        if c not in fixed and c not in other_types:
-            other_types.append(c)
-   
+    other_types = [t for t in preferred_type_order if t in cols and t not in fixed]
+    other_types += [c for c in cols if c not in fixed and c not in other_types]
+
     final_cols = fixed + other_types + ["Преподаватель", "Место"]
     if "Ссылка" in result.columns:
-          final_cols.append("Ссылка")          # ← последний столбец
+        final_cols.append("Ссылка")          # ← последний столбец
+
     final_cols = [c for c in final_cols if c in result.columns]
     result = result[final_cols]
- 
+
     result.rename(columns={"Место": "Формат занятий"}, inplace=True)
     return result
-
-
 
 def prepare_sorted_raw_sheets(
     combined_df: pd.DataFrame,
