@@ -5,3 +5,4 @@ beautifulsoup4
 supabase
 psycopg2-binary
 openpyxl
+gspread
