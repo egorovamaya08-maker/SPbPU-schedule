@@ -1806,9 +1806,14 @@ def _gia_excel_bytes() -> bytes:
             k = i
             while key is not None and k + 1 < len(cells) and cells[k + 1][j][2] == key:
                 k += 1
-            if k > i:
-                ws.merge_cells(start_row=i + 3, start_column=j + 2, end_row=k + 3, end_column=j + 2)
-            i = k + 1
+            end_k = k
+            # защита 10:00–12:00 объединяется до строки «12:00» включительно, если эта строка свободна
+            if (key is not None and cells[i][j][1] in ("s", "c") and k + 1 < len(cells)
+                    and cells[k + 1][j][2] is None and labels[k + 1][:10] == labels[k][:10]):
+                end_k = k + 1
+            if end_k > i:
+                ws.merge_cells(start_row=i + 3, start_column=j + 2, end_row=end_k + 3, end_column=j + 2)
+            i = end_k + 1
     ws.freeze_panes = "B3"
 
     # --- Остальные листы ---
@@ -1970,16 +1975,6 @@ GIA_TEXT_HELP = """ГЭК 1:
 Иванов Иван Иванович"""
 
 
-def _gia_add_row(comm_key: str):
-    c = st.session_state.get(comm_key)
-    if not c:
-        return
-    sess = st.session_state.gia_sess
-    new = {"ID": uuid.uuid4().hex[:8], "Комиссия": c, "Группа": "", "Студентов": 0, "Дата": "", "Начало": ""}
-    st.session_state.gia_sess = pd.concat([sess, pd.DataFrame([new])], ignore_index=True)
-    _gia_commit(f"Добавлена строка для {c}")
-
-
 def render_gia_tab():
     st.subheader("⚖️ Планирование ГИА (защиты ВКР)")
 
@@ -2016,19 +2011,15 @@ def render_gia_tab():
         st.info("Вставьте составы комиссий и нажмите «Применить составы» – после этого появятся "
                 "таблица заседаний и матрица занятости.")
     else:
-        # ---------- Шаг 2. Заседания ----------
-        st.markdown("#### 🗓 Шаг 2. Заседания ГЭК: даты защит")
+        # ---------- Заседания ----------
+        st.markdown("#### 🗓 Заседания ГЭК: даты защит")
         st.caption(
             f"Заполните столбцы со значком 🟩: группу, количество студентов, дату и время начала. "
             f"Длительность считается сама: {GIA_MIN_PER_STUDENT} мин на студента; окончание тоже. "
-            "Если у ГЭК несколько групп – добавьте строку кнопкой справа или знаком «+» под таблицей. "
-            "Удалить строку: отметьте её слева и нажмите значок корзины."
+            "Внесите всё, что нужно, и нажмите «💾 Сохранить» – таблица и матрица обновятся один раз. "
+            "Если у ГЭК несколько групп – выберите ГЭК под таблицей и нажмите «➕ Добавить строку» "
+            "(уже внесённое тоже сохранится). Удалить строку: отметьте её слева, нажмите значок корзины и «Сохранить»."
         )
-        a1, a2 = st.columns([3, 1])
-        akey = f"gia_add_comm_{ver}"
-        a1.selectbox("Добавить ещё одну группу для ГЭК", comms, key=akey)
-        a2.button("➕ Добавить строку", key=f"gia_add_btn_{ver}", on_click=_gia_add_row, args=(akey,),
-                  width="stretch")
 
         conf_all = _gia_all_conflicts(sess, members)
 
@@ -2065,7 +2056,8 @@ def render_gia_tab():
             return [""] * len(col)
 
         styled = view.style.apply(_calc_style, axis=0)
-        edited = st.data_editor(
+        form = st.form(f"gia_sess_form_{ver}", border=False)
+        edited = form.data_editor(
             styled, key=f"gia_sess_editor_{ver}", hide_index=True, width="stretch", num_rows="dynamic",
             column_order=["ГЭК", "Председатель", "Группа", "Студентов", "Дата", "Начало",
                           "Длительность", "Окончание", "Пересечения"],
@@ -2083,24 +2075,33 @@ def render_gia_tab():
                 "Пересечения": st.column_config.TextColumn("Пересечения", disabled=True, width="large"),
             },
         )
-        known = set(sess["ID"])
-        new_rows = []
-        for _, r in edited.iterrows():
-            rid = str(r["ID"]) if (not _gia_empty(r["ID"]) and str(r["ID"]) in known) else uuid.uuid4().hex[:8]
-            d = _gia_parse_date(r["Дата"])
-            t = _gia_parse_time(r["Начало"])
-            new_rows.append({
-                "ID": rid,
-                "Комиссия": "" if _gia_empty(r["ГЭК"]) else str(r["ГЭК"]),
-                "Группа": "" if _gia_empty(r["Группа"]) else str(r["Группа"]),
-                "Студентов": _gia_parse_int(r["Студентов"]),
-                "Дата": d.isoformat() if d else "",
-                "Начало": t.strftime("%H:%M") if t else "",
-            })
-        _, new_sess = _gia_normalize(st.session_state.gia_comm, pd.DataFrame(new_rows, columns=GIA_SESS_COLS))
-        if not new_sess.astype(str).reset_index(drop=True).equals(sess[GIA_SESS_COLS].astype(str).reset_index(drop=True)):
+        b1, b2, b3 = form.columns([1, 2, 1], vertical_alignment="bottom")
+        save = b1.form_submit_button("💾 Сохранить", type="primary", width="stretch")
+        add_comm = b2.selectbox("ГЭК для новой строки", comms, key=f"gia_add_comm_{ver}")
+        add = b3.form_submit_button("➕ Добавить строку", width="stretch")
+        if not (save or add):
+            edited = None
+        if edited is not None:
+            known = set(sess["ID"])
+            new_rows = []
+            for _, r in edited.iterrows():
+                rid = str(r["ID"]) if (not _gia_empty(r["ID"]) and str(r["ID"]) in known) else uuid.uuid4().hex[:8]
+                d = _gia_parse_date(r["Дата"])
+                t = _gia_parse_time(r["Начало"])
+                new_rows.append({
+                    "ID": rid,
+                    "Комиссия": "" if _gia_empty(r["ГЭК"]) else str(r["ГЭК"]),
+                    "Группа": "" if _gia_empty(r["Группа"]) else str(r["Группа"]),
+                    "Студентов": _gia_parse_int(r["Студентов"]),
+                    "Дата": d.isoformat() if d else "",
+                    "Начало": t.strftime("%H:%M") if t else "",
+                })
+            if add and add_comm:
+                new_rows.append({"ID": uuid.uuid4().hex[:8], "Комиссия": add_comm, "Группа": "", "Студентов": 0,
+                                 "Дата": "", "Начало": ""})
+            _, new_sess = _gia_normalize(st.session_state.gia_comm, pd.DataFrame(new_rows, columns=GIA_SESS_COLS))
             st.session_state.gia_sess = new_sess
-            _gia_commit("✅ Сохранено")
+            _gia_commit("➕ Строка добавлена, внесённое сохранено" if add else "✅ Сохранено")
             st.rerun()
 
         n_conf = sum(1 for v in conf_all.values() if v)
