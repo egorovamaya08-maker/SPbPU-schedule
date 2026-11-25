@@ -1795,10 +1795,9 @@ def _gia_excel_bytes() -> bytes:
         put(i, 1, lab, f12, a_left)
         for j, (txt, state, _) in enumerate(row, 2):
             put(i, j, txt, f9 if state == "b" else f12, a_center, fills.get(state))
-        if any(x[0] for x in row):
-            ws.row_dimensions[i].height = _gia_xl_height([x[0] for x in row], [W_B] * len(row), 12)
 
     # одно заседание на несколько слотов – ячейки объединяются по вертикали
+    heights = {}
     for j in range(len(comms)):
         i = 0
         while i < len(cells):
@@ -1808,12 +1807,20 @@ def _gia_excel_bytes() -> bytes:
                 k += 1
             end_k = k
             # защита 10:00–12:00 объединяется до строки «12:00» включительно, если эта строка свободна
-            if (key is not None and cells[i][j][1] in ("s", "c") and k + 1 < len(cells)
+            if (key is not None and k + 1 < len(cells)
                     and cells[k + 1][j][2] is None and labels[k + 1][:10] == labels[k][:10]):
                 end_k = k + 1
             if end_k > i:
                 ws.merge_cells(start_row=i + 3, start_column=j + 2, end_row=end_k + 3, end_column=j + 2)
+            if key is not None:               # нужная высота делится на все строки объединённой ячейки
+                txt, state, _ = cells[i][j]
+                need = _gia_xl_height([txt], [W_B], 9 if state == "b" else 12) / (end_k - i + 1)
+                for r in range(i, end_k + 1):
+                    heights[r] = max(heights.get(r, 15.0), need)
             i = end_k + 1
+    for r, h in heights.items():
+        if h > 15.5:
+            ws.row_dimensions[r + 3].height = round(h, 1)
     ws.freeze_panes = "B3"
 
     # --- Остальные листы ---
