@@ -1222,6 +1222,7 @@ GIA_MIN_PER_STUDENT = 30                  # минут на одного сту�
 GIA_DAY_FROM = dtime(10, 0)               # матрица: начало дня
 GIA_DAY_TO = dtime(21, 0)                 # матрица: конец дня
 GIA_RED = "FFA7A7"                        # цвет пересечения (Excel и приложение)
+GIA_BUSY = "D9D9D9"                       # член ГЭК занят в другой комиссии – сюда ставить нельзя
 
 
 # ---------------------------------------------------------------------
@@ -1650,7 +1651,20 @@ def _gia_grid(sess: pd.DataFrame, members: dict):
             for c in comms:
                 own = [(r, s, e) for r, s, e in active if r["Комиссия"] == c]
                 if not own:
-                    row.append(("", False, None))
+                    # своей защиты нет: кто из членов этой ГЭК в это время занят в другой
+                    busy = []
+                    for r2, s2, e2 in active:
+                        shared = sorted(set(members.get(c, [])) & set(members.get(r2["Комиссия"], [])))
+                        if shared:
+                            busy.append(f"занят(а): {', '.join(_gia_short(p) for p in shared)} "
+                                        f"({_gia_group_label(r2['Группа'])}, {r2['Комиссия']})")
+                    busy = list(dict.fromkeys(busy))
+                    if busy:
+                        text = "нельзя ставить\n" + "\n".join(busy)
+                        ids = tuple(r2["ID"] for r2, _, _ in active)
+                        row.append((text, "b", ("b", ids, text)))
+                    else:
+                        row.append(("", "", None))
                     continue
                 lines, notes = [], []
                 for r, s, e in own:
@@ -1667,7 +1681,7 @@ def _gia_grid(sess: pd.DataFrame, members: dict):
                                          f"({', '.join(_gia_short(p) for p in shared)})")
                 notes = list(dict.fromkeys(notes))
                 text = "\n".join(lines + notes)
-                row.append((text, bool(notes), (tuple(r["ID"] for r, _, _ in own), text)))
+                row.append((text, "c" if notes else "s", (tuple(r["ID"] for r, _, _ in own), text)))
             labels.append(f"{t.strftime('%d.%m.%Y')} в {t.strftime('%H:%M')}")
             cells.append(row)
             t = slot_end
@@ -1682,7 +1696,7 @@ def _gia_matrix_view(sess: pd.DataFrame, members: dict):
     labels, cells, _ = _gia_grid(sess, members)
     first = [", ".join(members.get(c, [])[1:]) for c in comms]
     data = [first] + [[x[0] for x in row] for row in cells]
-    mask = [[""] * len(comms)] + [["c" if x[1] else ("s" if x[0] else "") for x in row] for row in cells]
+    mask = [[""] * len(comms)] + [[x[1] for x in row] for row in cells]
     idx = pd.Index(["Состав комиссии"] + labels, name="Дата и время")
     return pd.DataFrame(data, index=idx, columns=heads), pd.DataFrame(mask, index=idx, columns=heads)
 
@@ -1748,6 +1762,8 @@ def _gia_excel_bytes() -> bytes:
     a_left = Alignment(horizontal="left", vertical="bottom", wrap_text=True)
     a_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     red = PatternFill(fill_type="solid", start_color=GIA_RED, end_color=GIA_RED)
+    grey = PatternFill(fill_type="solid", start_color=GIA_BUSY, end_color=GIA_BUSY)
+    fills = {"c": red, "b": grey}
     W_A, W_B = 22, 32
 
     heads = _gia_headers(comms, members)
@@ -1777,8 +1793,8 @@ def _gia_excel_bytes() -> bytes:
     # строки 3+ – слоты времени
     for i, (lab, row) in enumerate(zip(labels, cells), 3):
         put(i, 1, lab, f12, a_left)
-        for j, (txt, conf, _) in enumerate(row, 2):
-            put(i, j, txt, f12, a_center, red if conf else None)
+        for j, (txt, state, _) in enumerate(row, 2):
+            put(i, j, txt, f9 if state == "b" else f12, a_center, fills.get(state))
         if any(x[0] for x in row):
             ws.row_dimensions[i].height = _gia_xl_height([x[0] for x in row], [W_B] * len(row), 12)
 
@@ -2100,11 +2116,12 @@ def render_gia_tab():
             _, _, step = _gia_grid(sess, members)
             st.caption(f"Все рабочие дни с самой ранней по самую позднюю дату (выходные – только если в них есть защиты), 10:00–21:00, шаг {_gia_dur_label(step)}. "
                        "Столбцы – председатели, первая строка – члены комиссии. "
-                       "Красным – пересечение: один человек в двух ГЭК одновременно.")
+                       "Голубым – защита этой ГЭК. Серым – сюда эту ГЭК ставить нельзя: кто-то из её членов "
+                       "в это время на защите в другой ГЭК. Красным – пересечение: один человек в двух ГЭК одновременно.")
 
             def _mx_style(df):
                 return mask.replace({"c": f"background-color:#{GIA_RED}", "s": "background-color:#e8f0fe",
-                                     "": ""})
+                                     "b": f"background-color:#{GIA_BUSY};color:#555555", "": ""})
 
             sty = mx.style.apply(_mx_style, axis=None)
             st.dataframe(sty, width="stretch", height=min(40 + 35 * len(mx), 700))
