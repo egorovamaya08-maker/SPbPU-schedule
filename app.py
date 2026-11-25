@@ -1205,10 +1205,10 @@ def get_lesson_context(lessons_df, day_date, window_time, position='before'):
         return f"{time_str} {subject} (гр. {groups}) · {place}"
 
 # =====================================================================
-# ⚖️ ПЛАНИРОВАНИЕ ГИА (защиты ВКР) – НОВЫЙ БЛОК (версия 2)
-# Вставить ЦЕЛИКОМ перед строкой:
+# ⚖️ ПЛАНИРОВАНИЕ ГИА (защиты ВКР) – БЛОК (версия 3)
+# Стоит перед строкой:
 #     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-# Использует GROUP_MAP и TEACHER_MAP, объявленные выше в app.py.
+# Использует TEACHER_MAP, объявленный выше в app.py.
 # =====================================================================
 import json
 import os
@@ -1217,18 +1217,27 @@ from datetime import time as dtime
 
 GIA_LOCAL_FILE = "gia_data.json"          # локальная копия на сервере Streamlit
 GIA_COMM_COLS = ["Комиссия", "ФИО"]
-GIA_SESS_COLS = ["ID", "Комиссия", "Дата", "Начало", "Длительность, мин", "Группа"]
-GIA_DEFAULT_PARAMS = {
-    "start": "2027-06-01", "end": "2027-06-30",
-    "hour_from": 8, "hour_to": 20, "step": 30,
-    "weekends": False, "only_busy_days": True,
-}
-GIA_DURATIONS = list(range(30, 601, 30))  # 30 мин – 10 ч
+GIA_SESS_COLS = ["ID", "Комиссия", "Группа", "Студентов", "Дата", "Начало"]
+GIA_MIN_PER_STUDENT = 30                  # минут на одного студента
+GIA_DAY_FROM = dtime(10, 0)               # матрица: начало дня
+GIA_DAY_TO = dtime(21, 0)                 # матрица: конец дня
+GIA_RED = "FFA7A7"                        # цвет пересечения (Excel и приложение)
 
 
 # ---------------------------------------------------------------------
 # Вспомогательные функции
 # ---------------------------------------------------------------------
+def _gia_empty(v) -> bool:
+    if v is None:
+        return True
+    try:
+        if pd.isna(v):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return str(v).strip() in ("", "nan", "NaT", "None", "<NA>")
+
+
 def _gia_short(fio: str) -> str:
     """Иванов Иван Иванович -> Иванов И. И."""
     parts = str(fio).split()
@@ -1236,9 +1245,7 @@ def _gia_short(fio: str) -> str:
         return str(fio)
     if len(parts) >= 3:
         return f"{parts[0]} {parts[1][0]}. {parts[2][0]}."
-    if len(parts) == 2:
-        return f"{parts[0]} {parts[1][0]}."
-    return str(fio)
+    return f"{parts[0]} {parts[1][0]}."
 
 
 def _gia_dur_label(m: int) -> str:
@@ -1249,7 +1256,8 @@ def _gia_dur_label(m: int) -> str:
 
 
 def _gia_parse_date(v) -> date | None:
-    if v is None or (isinstance(v, float) and pd.isna(v)) or str(v).strip() in ("", "nan", "NaT", "None"):
+    """Понимает date, datetime, Timestamp, '2027-06-01', '01.06.2027' – в любом виде, который вернёт таблица."""
+    if _gia_empty(v):
         return None
     if isinstance(v, datetime):
         return v.date()
@@ -1266,17 +1274,26 @@ def _gia_parse_date(v) -> date | None:
 
 
 def _gia_parse_time(v) -> dtime | None:
-    if v is None or str(v).strip() in ("", "nan", "NaT", "None"):
+    if _gia_empty(v):
         return None
     if isinstance(v, dtime):
         return v.replace(second=0, microsecond=0)
     if isinstance(v, datetime):
         return v.time().replace(second=0, microsecond=0)
-    m = re.match(r"^\s*(\d{1,2})[:.](\d{2})", str(v))
+    m = re.search(r"(\d{1,2})[:.](\d{2})", str(v))
     if not m:
         return None
     h, mi = int(m.group(1)), int(m.group(2))
     return dtime(h, mi) if 0 <= h < 24 and 0 <= mi < 60 else None
+
+
+def _gia_parse_int(v) -> int:
+    if _gia_empty(v):
+        return 0
+    try:
+        return max(int(float(str(v).replace(",", "."))), 0)
+    except ValueError:
+        return 0
 
 
 def _gia_canonical_name(name: str) -> str:
@@ -1290,14 +1307,16 @@ def _gia_canonical_name(name: str) -> str:
     return " ".join(str(name).split()).strip()
 
 
-GIA_RU_WD = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
-GIA_DEFAULT_START = "10:00"
-GIA_DEFAULT_DUR = 120
+def _gia_group_label(g: str) -> str:
+    g = str(g).strip()
+    if not g:
+        return "заседание"
+    return g if g.lower().startswith("гр") else f"гр. {g}"
 
 
-def _gia_normalize(comm: pd.DataFrame, sess: pd.DataFrame, params: dict):
-    """Приводит данные к единому виду (строки, ISO-даты, ЧЧ:ММ).
-    Строка заседания может быть без даты – это «план»: ГЭК и группа есть, дата ещё не выбрана."""
+def _gia_normalize(comm: pd.DataFrame | None, sess: pd.DataFrame | None):
+    """Приводит данные к единому виду. Заседания комиссий, которых нет в составах, убираются;
+    у каждой комиссии всегда есть хотя бы одна строка в таблице заседаний."""
     comm = comm.copy() if comm is not None else pd.DataFrame(columns=GIA_COMM_COLS)
     for c in GIA_COMM_COLS:
         if c not in comm.columns:
@@ -1306,59 +1325,45 @@ def _gia_normalize(comm: pd.DataFrame, sess: pd.DataFrame, params: dict):
     comm["Комиссия"] = comm["Комиссия"].str.strip()
     comm["ФИО"] = comm["ФИО"].apply(lambda x: _gia_canonical_name(x) if str(x).strip() else "")
     comm = comm[comm["Комиссия"] != ""].drop_duplicates().reset_index(drop=True)
-    # у комиссии с людьми убираем пустую строку-заглушку
     has_people = set(comm.loc[comm["ФИО"] != "", "Комиссия"])
     comm = comm[~((comm["ФИО"] == "") & comm["Комиссия"].isin(has_people))].reset_index(drop=True)
     order = {c: i for i, c in enumerate(dict.fromkeys(comm["Комиссия"]))}
 
     sess = sess.copy() if sess is not None else pd.DataFrame(columns=GIA_SESS_COLS)
-    for c in GIA_SESS_COLS:
-        if c not in sess.columns:
-            sess[c] = ""
     rows = []
     for _, r in sess.iterrows():
-        comm_name = "" if pd.isna(r["Комиссия"]) else str(r["Комиссия"]).strip()
-        if not comm_name or comm_name == "nan":
+        comm_name = "" if _gia_empty(r.get("Комиссия")) else str(r.get("Комиссия")).strip()
+        if comm_name not in order:          # комиссии нет в составах – строка уходит
             continue
-        d = _gia_parse_date(r["Дата"])
-        t = _gia_parse_time(r["Начало"]) or _gia_parse_time(GIA_DEFAULT_START)
-        try:
-            dur = int(float(r["Длительность, мин"]))
-        except (TypeError, ValueError):
-            dur = GIA_DEFAULT_DUR
-        rid = "" if pd.isna(r["ID"]) else str(r["ID"]).strip()
-        grp = "" if pd.isna(r["Группа"]) else str(r["Группа"]).strip()
+        d = _gia_parse_date(r.get("Дата"))
+        t = _gia_parse_time(r.get("Начало"))
+        n = _gia_parse_int(r.get("Студентов", r.get("Кол-во студентов")))
+        if not n and not _gia_empty(r.get("Длительность, мин")):   # файлы старой версии
+            n = max(round(_gia_parse_int(r.get("Длительность, мин")) / GIA_MIN_PER_STUDENT), 0)
+        rid = "" if _gia_empty(r.get("ID")) else str(r.get("ID")).strip()
+        grp = "" if _gia_empty(r.get("Группа")) else str(r.get("Группа")).strip()
         rows.append({
-            "ID": rid if rid and rid not in ("nan", "None") else uuid.uuid4().hex[:8],
+            "ID": rid or uuid.uuid4().hex[:8],
             "Комиссия": comm_name,
+            "Группа": grp,
+            "Студентов": min(n, 200),
             "Дата": d.isoformat() if d else "",
-            "Начало": t.strftime("%H:%M"),
-            "Длительность, мин": min(max(dur, 15), 720),
-            "Группа": "" if grp in ("nan", "None") else grp,
+            "Начало": t.strftime("%H:%M") if t else "",
         })
-    # у каждой комиссии должна быть хотя бы одна строка – чтобы было куда вписать дату
     present = {r["Комиссия"] for r in rows}
     for c in order:
         if c not in present:
-            rows.append({"ID": uuid.uuid4().hex[:8], "Комиссия": c, "Дата": "", "Начало": GIA_DEFAULT_START,
-                         "Длительность, мин": GIA_DEFAULT_DUR, "Группа": ""})
+            rows.append({"ID": uuid.uuid4().hex[:8], "Комиссия": c, "Группа": "", "Студентов": 0,
+                         "Дата": "", "Начало": ""})
     sess = pd.DataFrame(rows, columns=GIA_SESS_COLS)
     if not sess.empty:
-        sess["_o"] = sess["Комиссия"].map(lambda c: order.get(c, 10_000))
+        sess = sess.drop_duplicates(subset="ID")
+        sess["_o"] = sess["Комиссия"].map(order)
         sess["_d"] = sess["Дата"].replace("", "9999-12-31")
-        sess = sess.sort_values(["_o", "_d", "Начало", "Группа"]).drop(columns=["_o", "_d"]).reset_index(drop=True)
-
-    p = dict(GIA_DEFAULT_PARAMS)
-    for k, v in (params or {}).items():
-        if k in p and str(v).strip() not in ("", "nan"):
-            p[k] = v
-    for k in ("hour_from", "hour_to", "step"):
-        p[k] = int(float(p[k]))
-    for k in ("weekends", "only_busy_days"):
-        p[k] = str(p[k]).strip().lower() in ("true", "1", "да", "yes")
-    p["start"] = (_gia_parse_date(p["start"]) or date.fromisoformat(GIA_DEFAULT_PARAMS["start"])).isoformat()
-    p["end"] = (_gia_parse_date(p["end"]) or date.fromisoformat(GIA_DEFAULT_PARAMS["end"])).isoformat()
-    return comm, sess, p
+        sess["_t"] = sess["Начало"].replace("", "99:99")
+        sess = sess.sort_values(["_o", "_d", "_t"], kind="stable").drop(columns=["_o", "_d", "_t"])
+    sess["Студентов"] = sess["Студентов"].astype(int)
+    return comm, sess.reset_index(drop=True)
 
 
 def _gia_commissions() -> list[str]:
@@ -1379,15 +1384,20 @@ def _gia_chair(members: dict, c: str) -> str:
     return lst[0] if lst else ""
 
 
-def _gia_dated(sess: pd.DataFrame) -> pd.DataFrame:
-    return sess[sess["Дата"].astype(str).str.strip() != ""]
+def _gia_is_scheduled(r) -> bool:
+    """Заседание попадает в расчёт, когда есть дата, начало и количество студентов."""
+    return bool(str(r["Дата"]).strip()) and bool(str(r["Начало"]).strip()) and int(r["Студентов"]) > 0
+
+
+def _gia_scheduled(sess: pd.DataFrame) -> pd.DataFrame:
+    if sess.empty:
+        return sess
+    return sess[sess.apply(_gia_is_scheduled, axis=1)]
 
 
 def _gia_interval(r) -> tuple[datetime, datetime]:
-    d = date.fromisoformat(r["Дата"])
-    t = _gia_parse_time(r["Начало"]) or _gia_parse_time(GIA_DEFAULT_START)
-    start = datetime.combine(d, t)
-    return start, start + timedelta(minutes=int(r["Длительность, мин"]))
+    start = datetime.combine(date.fromisoformat(r["Дата"]), _gia_parse_time(r["Начало"]))
+    return start, start + timedelta(minutes=int(r["Студентов"]) * GIA_MIN_PER_STUDENT)
 
 
 # ---------------------------------------------------------------------
@@ -1404,9 +1414,9 @@ def _gia_parse_text(text: str):
     """Разбирает текст вида
          ГЭК 1:
          Группа: в3743801/41401          (необязательно)
-         Председатель 1
-         Иванов Иван Иванович
-    Возвращает (список комиссий, предупреждения). Первый человек в списке – председатель."""
+         Иванов Иван Иванович            (первый – председатель)
+         Петрова Мария Сергеевна
+    Возвращает (список комиссий, предупреждения)."""
     blocks, warns = [], []
     cur = None
     for raw in str(text).splitlines():
@@ -1457,20 +1467,16 @@ def _gia_parse_text(text: str):
 
 def _gia_text_from_data() -> str:
     members = _gia_members()
-    sess = st.session_state.gia_sess
     out = []
     for c in _gia_commissions():
         out.append(f"{c}:")
-        groups = [g for g in dict.fromkeys(sess.loc[sess["Комиссия"] == c, "Группа"]) if g]
-        if groups:
-            out.append("Группа: " + ", ".join(groups))
         out += members.get(c, [])
         out.append("")
     return "\n".join(out).strip()
 
 
 def _gia_apply_text(widget_key: str):
-    """Колбэк: срабатывает, когда курсор уходит из поля (или Ctrl+Enter)."""
+    """Кнопка «Применить составы»: составы заменяются, таблица заседаний синхронизируется без вопросов."""
     text = st.session_state.get(widget_key, "")
     blocks, warns = _gia_parse_text(text)
     if not blocks:
@@ -1484,11 +1490,11 @@ def _gia_apply_text(widget_key: str):
     st.session_state.gia_comm = pd.DataFrame(comm_rows, columns=GIA_COMM_COLS)
 
     sess = st.session_state.gia_sess.copy()
-    names = {b["name"] for b in blocks}
-    # строки без даты у комиссий, которых больше нет, убираем; строки с датой оставляем (вдруг опечатка)
-    sess = sess[sess["Комиссия"].isin(names) | (sess["Дата"] != "")].reset_index(drop=True)
+    names = [b["name"] for b in blocks]
+    gone = sess[~sess["Комиссия"].isin(names)]
+    sess = sess[sess["Комиссия"].isin(names)].reset_index(drop=True)
     add = []
-    for b in blocks:
+    for b in blocks:                       # строки «Группа: …» из текста (необязательно)
         for g in b["groups"]:
             mine = sess["Комиссия"] == b["name"]
             if ((sess["Группа"] == g) & mine).any():
@@ -1497,36 +1503,36 @@ def _gia_apply_text(widget_key: str):
             if len(free):
                 sess.loc[free[0], "Группа"] = g
             else:
-                add.append({"ID": uuid.uuid4().hex[:8], "Комиссия": b["name"], "Дата": "",
-                            "Начало": GIA_DEFAULT_START, "Длительность, мин": GIA_DEFAULT_DUR, "Группа": g})
+                add.append({"ID": uuid.uuid4().hex[:8], "Комиссия": b["name"], "Группа": g, "Студентов": 0,
+                            "Дата": "", "Начало": ""})
     if add:
         sess = pd.concat([sess, pd.DataFrame(add)], ignore_index=True)
     st.session_state.gia_sess = sess
+    if not gone.empty:
+        warns = warns + ["Убраны заседания комиссий, которых больше нет в составах: "
+                         + ", ".join(sorted(gone["Комиссия"].unique()))]
     st.session_state.gia_flash_warn = warns
-    _gia_commit(f"✅ Составы сохранены: комиссий – {len(blocks)}, "
+    _gia_commit(f"✅ Составы применены: комиссий – {len(blocks)}, "
                 f"человек – {len({m for b in blocks for m in b['members']})}")
 
 
 # ---------------------------------------------------------------------
 # Пересечения
 # ---------------------------------------------------------------------
-def _gia_conflicts_for(cand: dict, sess: pd.DataFrame, members: dict, exclude_id: str | None = None) -> list[str]:
+def _gia_conflicts_for(cand: dict, sess: pd.DataFrame, members: dict) -> list[str]:
     out = []
-    if not str(cand.get("Дата", "")).strip():
+    if not _gia_is_scheduled(cand):
         return out
-    try:
-        c_start, c_end = _gia_interval(cand)
-    except Exception:
-        return out
+    c_start, c_end = _gia_interval(cand)
     c_mem = set(members.get(cand["Комиссия"], []))
-    for _, r in _gia_dated(sess).iterrows():
-        if exclude_id is not None and r["ID"] == exclude_id:
+    for _, r in _gia_scheduled(sess).iterrows():
+        if r["ID"] == cand["ID"]:
             continue
         s, e = _gia_interval(r)
         if not (c_start < e and s < c_end):
             continue
         when = f"{s.strftime('%d.%m.%Y')} {s.strftime('%H:%M')}–{e.strftime('%H:%M')}"
-        grp = f", гр. {r['Группа']}" if r["Группа"] else ""
+        grp = f", {_gia_group_label(r['Группа'])}" if r["Группа"] else ""
         if r["Комиссия"] == cand["Комиссия"]:
             out.append(f"{r['Комиссия']} уже заседает {when}{grp}")
             continue
@@ -1536,7 +1542,7 @@ def _gia_conflicts_for(cand: dict, sess: pd.DataFrame, members: dict, exclude_id
 
 
 def _gia_all_conflicts(sess: pd.DataFrame, members: dict) -> dict[str, list[str]]:
-    return {r["ID"]: _gia_conflicts_for(r.to_dict(), sess, members, exclude_id=r["ID"]) for _, r in sess.iterrows()}
+    return {r["ID"]: _gia_conflicts_for(r.to_dict(), sess, members) for _, r in sess.iterrows()}
 
 
 # ---------------------------------------------------------------------
@@ -1545,104 +1551,260 @@ def _gia_all_conflicts(sess: pd.DataFrame, members: dict) -> dict[str, list[str]
 def _gia_summary(sess: pd.DataFrame, members: dict) -> pd.DataFrame:
     conf = _gia_all_conflicts(sess, members)
     rows = []
-    for _, r in _gia_dated(sess).iterrows():
+    for _, r in _gia_scheduled(sess).iterrows():
         s, e = _gia_interval(r)
         rows.append({
             "Дата": s.strftime("%d.%m.%Y"),
             "Время": f"{s.strftime('%H:%M')}–{e.strftime('%H:%M')}",
-            "Комиссия": r["Комиссия"],
+            "ГЭК": r["Комиссия"],
             "Группа": r["Группа"],
+            "Студентов": int(r["Студентов"]),
             "Председатель": _gia_chair(members, r["Комиссия"]),
-            "Члены комиссии": "; ".join(members.get(r["Комиссия"], [])),
+            "Члены комиссии": "; ".join(members.get(r["Комиссия"], [])[1:]),
             "Пересечения": "; ".join(conf.get(r["ID"], [])) or "нет",
+            "_s": s,
         })
-    return pd.DataFrame(rows, columns=["Дата", "Время", "Комиссия", "Группа", "Председатель",
-                                       "Члены комиссии", "Пересечения"])
+    df = pd.DataFrame(rows, columns=["Дата", "Время", "ГЭК", "Группа", "Студентов", "Председатель",
+                                     "Члены комиссии", "Пересечения", "_s"])
+    return df.sort_values("_s").drop(columns="_s").reset_index(drop=True)
 
 
 def _gia_by_person(sess: pd.DataFrame, members: dict) -> pd.DataFrame:
     rows = []
-    for _, r in _gia_dated(sess).iterrows():
+    for _, r in _gia_scheduled(sess).iterrows():
         s, e = _gia_interval(r)
         for p in members.get(r["Комиссия"], []):
             rows.append({"ФИО": p, "Дата": s.strftime("%d.%m.%Y"), "_sort": s,
                          "Время": f"{s.strftime('%H:%M')}–{e.strftime('%H:%M')}",
-                         "Комиссия": r["Комиссия"], "Группа": r["Группа"]})
-    df = pd.DataFrame(rows, columns=["ФИО", "Дата", "_sort", "Время", "Комиссия", "Группа"])
+                         "ГЭК": r["Комиссия"], "Группа": r["Группа"]})
+    df = pd.DataFrame(rows, columns=["ФИО", "Дата", "_sort", "Время", "ГЭК", "Группа"])
     if not df.empty:
         df = df.sort_values(["ФИО", "_sort"])
     return df.drop(columns="_sort").reset_index(drop=True)
 
 
-def _gia_matrix_header(c: str, members: dict) -> str:
-    lst = members.get(c, [])
-    return f"{c} ({', '.join(_gia_short(m) for m in lst)})" if lst else c
+def _gia_sess_export(sess: pd.DataFrame) -> pd.DataFrame:
+    """Лист «Заседания» в файле проекта (по нему проект восстанавливается)."""
+    rows = []
+    for _, r in sess.iterrows():
+        dur = int(r["Студентов"]) * GIA_MIN_PER_STUDENT
+        end = _gia_interval(r)[1].strftime("%H:%M") if _gia_is_scheduled(r) else ""
+        d = date.fromisoformat(r["Дата"]).strftime("%d.%m.%Y") if r["Дата"] else ""
+        rows.append({"ID": r["ID"], "Комиссия": r["Комиссия"], "Группа": r["Группа"],
+                     "Студентов": int(r["Студентов"]) or "", "Дата": d, "Начало": r["Начало"],
+                     "Длительность, мин": dur or "", "Окончание": end})
+    return pd.DataFrame(rows, columns=["ID", "Комиссия", "Группа", "Студентов", "Дата", "Начало",
+                                       "Длительность, мин", "Окончание"])
 
 
-def _gia_matrix(sess: pd.DataFrame, members: dict, p: dict) -> pd.DataFrame:
+# ---------------------------------------------------------------------
+# Матрица: строится сама – от самой ранней даты до самой поздней, 10:00–21:00
+# ---------------------------------------------------------------------
+def _gia_headers(comms: list[str], members: dict) -> list[str]:
+    """Строка 1 матрицы: председатель (если председатель повторяется – добавляется название ГЭК)."""
+    base = [_gia_chair(members, c) or c for c in comms]
+    out = []
+    for c, h in zip(comms, base):
+        out.append(f"{h} ({c})" if base.count(h) > 1 and h != c else h)
+    seen = {}
+    for i, h in enumerate(out):              # на всякий случай – только уникальные названия
+        if h in seen:
+            seen[h] += 1
+            out[i] = f"{h} [{seen[h]}]"
+        else:
+            seen[h] = 1
+    return out
+
+
+def _gia_grid(sess: pd.DataFrame, members: dict):
+    """Возвращает (метки строк, ячейки), где ячейка = (текст, пересечение?, ключ для объединения)."""
     comms = list(members.keys())
-    d0, d1 = date.fromisoformat(p["start"]), date.fromisoformat(p["end"])
-    intervals = [(r, *_gia_interval(r)) for _, r in _gia_dated(sess).iterrows()]
-    busy_days = {s.date() for _, s, _ in intervals}
-    if busy_days and p["only_busy_days"]:
-        d0, d1 = min(d0, min(busy_days)), max(d1, max(busy_days))
-    index, data = [], []
+    sched = [(r, *_gia_interval(r)) for _, r in _gia_scheduled(sess).iterrows()]
+    if not sched:
+        return [], [], 30
+    # шаг: 1 час, если все заседания начинаются ровно в час и длятся целое число часов, иначе 30 мин
+    step = 60 if all(s.minute == 0 and (e - s).seconds % 3600 == 0 and (e - s).days == 0
+                     for _, s, e in sched) else 30
+    d0 = min(s.date() for _, s, _ in sched)
+    d1 = max(s.date() for _, s, _ in sched)
+    labels, cells = [], []
     d = d0
     while d <= d1:
-        if (p["weekends"] or d.weekday() < 5 or d in busy_days) and (not p["only_busy_days"] or d in busy_days):
-            t = datetime.combine(d, dtime(p["hour_from"], 0))
-            t_end = datetime.combine(d, dtime(23, 59)) if p["hour_to"] >= 24 else datetime.combine(d, dtime(p["hour_to"], 0))
-            while t < t_end:
-                slot_end = t + timedelta(minutes=p["step"])
-                active = [(r, s, e) for r, s, e in intervals if s < slot_end and t < e]
-                row = []
-                for c in comms:
-                    own = [(r, s, e) for r, s, e in active if r["Комиссия"] == c]
-                    notes = []
-                    for r, s, e in active:
-                        if r["Комиссия"] == c:
+        day = [(r, s, e) for r, s, e in sched if s.date() == d]
+        if d.weekday() >= 5 and not day:     # сб и вс без защит не показываем
+            d += timedelta(days=1)
+            continue
+        t = datetime.combine(d, GIA_DAY_FROM)
+        t_end = datetime.combine(d, GIA_DAY_TO)
+        if day:
+            first = min(s for _, s, _ in day)
+            last = max(e for _, _, e in day)
+            while first < t:
+                t -= timedelta(minutes=step)
+            while t_end < last:
+                t_end += timedelta(minutes=step)
+        while t < t_end:
+            slot_end = t + timedelta(minutes=step)
+            active = [(r, s, e) for r, s, e in sched if s < slot_end and t < e]
+            row = []
+            for c in comms:
+                own = [(r, s, e) for r, s, e in active if r["Комиссия"] == c]
+                if not own:
+                    row.append(("", False, None))
+                    continue
+                lines, notes = [], []
+                for r, s, e in own:
+                    lines.append(_gia_group_label(r["Группа"]))
+                    for r2, s2, e2 in active:
+                        if r2["ID"] == r["ID"] or not (s < e2 and s2 < e):
                             continue
-                        shared = set(members.get(c, [])) & set(members.get(r["Комиссия"], []))
-                        for person in sorted(shared):
-                            g = f"гр. {r['Группа']}, " if r["Группа"] else ""
-                            notes.append(f"{_gia_short(person)} занят(а): {g}"
-                                         f"{s.strftime('%H:%M')}–{e.strftime('%H:%M')}, {r['Комиссия']}")
-                    if own:
-                        r, s, e = own[0]
-                        g = f"гр. {r['Группа']} " if r["Группа"] else ""
-                        mark = g + f"{s.strftime('%H:%M')}–{e.strftime('%H:%M')}"
-                        if len(own) > 1:
-                            row.append("🟥 два заседания одной ГЭК: " + "; ".join(
-                                (f"гр. {x['Группа']} " if x["Группа"] else "") + f"{a.strftime('%H:%M')}–{b.strftime('%H:%M')}"
-                                for x, a, b in own))
-                        elif notes:
-                            row.append("🟥 " + mark + " – ПЕРЕСЕЧЕНИЕ: " + "; ".join(notes))
-                        else:
-                            row.append("🟦 " + mark)
-                    else:
-                        row.append("⛔ " + "; ".join(notes) if notes else "")
-                index.append(f"{GIA_RU_WD[d.weekday()]} {t.strftime('%d.%m %H:%M')}")
-                data.append(row)
-                t = slot_end
+                        if r2["Комиссия"] == c:
+                            notes.append(f"пересечение с {_gia_group_label(r2['Группа'])} (та же ГЭК)")
+                            continue
+                        shared = sorted(set(members.get(c, [])) & set(members.get(r2["Комиссия"], [])))
+                        if shared:
+                            notes.append(f"пересечение с {_gia_group_label(r2['Группа'])} "
+                                         f"({', '.join(_gia_short(p) for p in shared)})")
+                notes = list(dict.fromkeys(notes))
+                text = "\n".join(lines + notes)
+                row.append((text, bool(notes), (tuple(r["ID"] for r, _, _ in own), text)))
+            labels.append(f"{t.strftime('%d.%m.%Y')} в {t.strftime('%H:%M')}")
+            cells.append(row)
+            t = slot_end
         d += timedelta(days=1)
-    return pd.DataFrame(data, index=pd.Index(index, name="Дата и время"),
-                        columns=[_gia_matrix_header(c, members) for c in comms])
+    return labels, cells, step
+
+
+def _gia_matrix_view(sess: pd.DataFrame, members: dict):
+    """Матрица для приложения: первая строка – состав, далее слоты. Возвращает (таблица, маска пересечений)."""
+    comms = list(members.keys())
+    heads = _gia_headers(comms, members)
+    labels, cells, _ = _gia_grid(sess, members)
+    first = [", ".join(members.get(c, [])[1:]) for c in comms]
+    data = [first] + [[x[0] for x in row] for row in cells]
+    mask = [[""] * len(comms)] + [["c" if x[1] else ("s" if x[0] else "") for x in row] for row in cells]
+    idx = pd.Index(["Состав комиссии"] + labels, name="Дата и время")
+    return pd.DataFrame(data, index=idx, columns=heads), pd.DataFrame(mask, index=idx, columns=heads)
+
+
+# ---------------------------------------------------------------------
+# Файл проекта (Excel)
+# ---------------------------------------------------------------------
+def _gia_xl_height(texts: list[str], widths: list[float], size: int) -> float:
+    """Примерная высота строки, чтобы перенесённый текст был виден целиком."""
+    per_line = 1.0 * size + 3.5
+    lines = 1
+    for txt, w in zip(texts, widths):
+        chars = max(int(w * 11 / size), 1)
+        n = sum(max(1, -(-len(part) // chars)) for part in str(txt).split("\n")) if txt else 1
+        lines = max(lines, n)
+    return max(15.0, lines * per_line + 2)
+
+
+def _gia_xl_table(ws, df: pd.DataFrame, widths: dict | None = None):
+    """Обычный лист: Times New Roman, все границы, шапка жирная."""
+    from openpyxl.styles import Alignment, Border, Font, Side
+    from openpyxl.utils import get_column_letter
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    cols = list(df.columns)
+    for j, c in enumerate(cols, 1):
+        cell = ws.cell(row=1, column=j, value=c)
+        cell.font = Font(name="Times New Roman", size=12, bold=True, color="000000")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+    for i, row in enumerate(df.itertuples(index=False), 2):
+        for j, v in enumerate(row, 1):
+            cell = ws.cell(row=i, column=j, value="" if _gia_empty(v) else v)
+            cell.font = Font(name="Times New Roman", size=12, color="000000")
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+            cell.border = border
+    for j, c in enumerate(cols, 1):
+        w = (widths or {}).get(c)
+        if w is None:
+            longest = max([len(str(c))] + [len(str(v)) for v in df[c].tolist()]) if len(df) else len(str(c))
+            w = min(max(10, longest + 2), 60)
+        ws.column_dimensions[get_column_letter(j)].width = w
+    ws.freeze_panes = "A2"
 
 
 def _gia_excel_bytes() -> bytes:
-    comm, sess, p = st.session_state.gia_comm, st.session_state.gia_sess, st.session_state.gia_params
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    comm, sess = st.session_state.gia_comm, st.session_state.gia_sess
     members = _gia_members()
+    comms = list(members.keys())
+    wb = Workbook()
+
+    # --- Лист 1: Расписание ГЭК (вид как на образце) ---
+    ws = wb.active
+    ws.title = "Расписание ГЭК"
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    f12 = Font(name="Times New Roman", size=12, color="000000")
+    f9 = Font(name="Times New Roman", size=9, color="000000")
+    a_left = Alignment(horizontal="left", vertical="bottom", wrap_text=True)
+    a_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    red = PatternFill(fill_type="solid", start_color=GIA_RED, end_color=GIA_RED)
+    W_A, W_B = 22, 32
+
+    heads = _gia_headers(comms, members)
+    labels, cells, _ = _gia_grid(sess, members)
+    ws.column_dimensions["A"].width = W_A
+    for j in range(len(comms)):
+        ws.column_dimensions[get_column_letter(j + 2)].width = W_B
+
+    def put(r, c, v, font, align, fill=None):
+        cell = ws.cell(row=r, column=c, value=v)
+        cell.font, cell.alignment, cell.border = font, align, border
+        if fill is not None:
+            cell.fill = fill
+        return cell
+
+    # строка 1 – председатели, строка 2 – «Дата и время» и составы
+    put(1, 1, "", f12, a_left)
+    put(2, 1, "Дата и время", f12, a_left)
+    row2 = []
+    for j, c in enumerate(comms, 2):
+        put(1, j, heads[j - 2], f12, a_center)
+        txt = ", ".join(members.get(c, [])[1:])
+        row2.append(txt)
+        put(2, j, txt, f9, a_center)
+    ws.row_dimensions[2].height = _gia_xl_height(row2, [W_B] * len(row2), 9)
+
+    # строки 3+ – слоты времени
+    for i, (lab, row) in enumerate(zip(labels, cells), 3):
+        put(i, 1, lab, f12, a_left)
+        for j, (txt, conf, _) in enumerate(row, 2):
+            put(i, j, txt, f12, a_center, red if conf else None)
+        if any(x[0] for x in row):
+            ws.row_dimensions[i].height = _gia_xl_height([x[0] for x in row], [W_B] * len(row), 12)
+
+    # одно заседание на несколько слотов – ячейки объединяются по вертикали
+    for j in range(len(comms)):
+        i = 0
+        while i < len(cells):
+            key = cells[i][j][2]
+            k = i
+            while key is not None and k + 1 < len(cells) and cells[k + 1][j][2] == key:
+                k += 1
+            if k > i:
+                ws.merge_cells(start_row=i + 3, start_column=j + 2, end_row=k + 3, end_column=j + 2)
+            i = k + 1
+    ws.freeze_panes = "B3"
+
+    # --- Остальные листы ---
+    _gia_xl_table(wb.create_sheet("Итог"), _gia_summary(sess, members),
+                  {"Члены комиссии": 50, "Пересечения": 50, "Председатель": 30})
+    _gia_xl_table(wb.create_sheet("По членам комиссий"), _gia_by_person(sess, members))
+    # служебные листы – по ним проект восстанавливается
+    _gia_xl_table(wb.create_sheet("Комиссии"), comm)
+    _gia_xl_table(wb.create_sheet("Заседания"), _gia_sess_export(sess), {"ID": 11})
+
     out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as w:
-        # служебные листы – по ним проект восстанавливается
-        comm.to_excel(w, sheet_name="Комиссии", index=False)
-        sess.to_excel(w, sheet_name="Заседания", index=False)
-        _gia_params_df(p).to_excel(w, sheet_name="Параметры", index=False)
-        # листы для работы и рассылки
-        _gia_summary(sess, members).to_excel(w, sheet_name="Итог", index=False)
-        _gia_by_person(sess, members).to_excel(w, sheet_name="По членам комиссий", index=False)
-        if members:
-            _gia_matrix(sess, members, p).to_excel(w, sheet_name="Матрица")
+    wb.save(out)
     return out.getvalue()
 
 
@@ -1671,6 +1833,8 @@ def _gia_gs_write(book, title: str, df: pd.DataFrame):
     values = [list(df.columns)] + df.astype(str).values.tolist()
     if ws.row_count < len(values) + 1:
         ws.add_rows(len(values) + 1 - ws.row_count)
+    if ws.col_count < len(df.columns):
+        ws.add_cols(len(df.columns) - ws.col_count)
     # сначала пишем новые данные, потом чистим хвост — так данные не теряются при сбое
     ws.update(range_name="A1", values=values, value_input_option="RAW")
     last = max(ws.row_count, len(values) + 1)
@@ -1688,48 +1852,33 @@ def _gia_gs_read(book, title: str) -> pd.DataFrame | None:
     return pd.DataFrame(rows[1:], columns=rows[0])
 
 
-def _gia_params_df(p: dict) -> pd.DataFrame:
-    return pd.DataFrame({"Параметр": list(p.keys()), "Значение": [str(v) for v in p.values()]})
-
-
-def _gia_params_from_df(df: pd.DataFrame | None) -> dict:
-    if df is None or df.empty or "Параметр" not in df.columns:
-        return {}
-    return dict(zip(df["Параметр"].astype(str), df["Значение"].astype(str)))
-
-
 def _gia_persist():
     """Сохраняет ВСЁ сразу после каждого изменения."""
-    comm, sess, p = st.session_state.gia_comm, st.session_state.gia_sess, st.session_state.gia_params
+    comm, sess = st.session_state.gia_comm, st.session_state.gia_sess
     now = datetime.now().strftime("%H:%M:%S")
     msgs = []
-    # 1) локальный файл (атомарная запись: сначала во временный, потом замена)
     try:
-        payload = {"commissions": comm.to_dict("records"), "sessions": sess.to_dict("records"), "params": p}
+        payload = {"commissions": comm.to_dict("records"), "sessions": sess.to_dict("records")}
         tmp = GIA_LOCAL_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=1)
+            json.dump(payload, fh, ensure_ascii=False, indent=1, default=str)
         os.replace(tmp, GIA_LOCAL_FILE)
     except Exception as e:
         msgs.append(f"локальная копия не записалась ({e})")
-    # 2) Google Таблица
     if _gia_gs_enabled():
         try:
             book = _gia_gs_book()
             _gia_gs_write(book, "Комиссии", comm)
             _gia_gs_write(book, "Заседания", sess)
-            _gia_gs_write(book, "Параметры", _gia_params_df(p))
             st.session_state.gia_status = ("ok", f"✅ Сохранено в Google Таблицу в {now}")
         except Exception as e:
             st.session_state.gia_status = (
                 "err", f"⚠️ Google Таблица недоступна ({e}). Данные сохранены в локальной копии, "
-                       f"на всякий случай скачайте файл проекта."
-            )
+                       f"на всякий случай скачайте файл проекта.")
     else:
         st.session_state.gia_status = (
             "warn", f"💾 Сохранено в локальной копии в {now}. Google Таблица не подключена — "
-                    f"после перезапуска приложения данные восстановятся только из файла проекта."
-        )
+                    f"после перезапуска приложения данные восстановятся только из файла проекта.")
     if msgs:
         st.session_state.gia_status = ("err", "⚠️ " + "; ".join(msgs) + ". Скачайте файл проекта.")
 
@@ -1737,14 +1886,12 @@ def _gia_persist():
 def _gia_load():
     """Загрузка при открытии: Google Таблица -> локальный файл -> пусто."""
     comm = sess = None
-    params = {}
     source = "пустой проект"
     if _gia_gs_enabled():
         try:
             book = _gia_gs_book()
             comm = _gia_gs_read(book, "Комиссии")
             sess = _gia_gs_read(book, "Заседания")
-            params = _gia_params_from_df(_gia_gs_read(book, "Параметры"))
             source = "Google Таблица"
         except Exception as e:
             st.session_state.gia_status = ("err", f"⚠️ Не удалось прочитать Google Таблицу ({e}). Открыта локальная копия.")
@@ -1755,19 +1902,17 @@ def _gia_load():
                 data = json.load(fh)
             comm = pd.DataFrame(data.get("commissions", []))
             sess = pd.DataFrame(data.get("sessions", []))
-            params = data.get("params", {})
             source = "локальная копия"
         except Exception:
             pass
-    c, s, p = _gia_normalize(comm, sess, params)
-    st.session_state.gia_comm, st.session_state.gia_sess, st.session_state.gia_params = c, s, p
+    st.session_state.gia_comm, st.session_state.gia_sess = _gia_normalize(comm, sess)
     st.session_state.setdefault("gia_status", ("info", f"Открыто: {source}"))
 
 
 def _gia_commit(flash: str | None = None):
     """Нормализовать, сохранить, обновить виджеты."""
-    c, s, p = _gia_normalize(st.session_state.gia_comm, st.session_state.gia_sess, st.session_state.gia_params)
-    st.session_state.gia_comm, st.session_state.gia_sess, st.session_state.gia_params = c, s, p
+    st.session_state.gia_comm, st.session_state.gia_sess = _gia_normalize(
+        st.session_state.gia_comm, st.session_state.gia_sess)
     _gia_persist()
     st.session_state.gia_ver += 1
     if flash:
@@ -1780,26 +1925,19 @@ def _gia_import_excel(file) -> list[str]:
         sheets = pd.read_excel(file, sheet_name=None, dtype=str)
     except Exception as e:
         return [f"Не удалось прочитать файл: {e}"]
-    errors = []
-    for name in ("Комиссии", "Заседания"):
-        if name not in sheets:
-            errors.append(f"В файле нет листа «{name}».")
+    errors = [f"В файле нет листа «{n}»." for n in ("Комиссии", "Заседания") if n not in sheets]
     if errors:
         return errors
     comm, sess = sheets["Комиссии"].fillna(""), sheets["Заседания"].fillna("")
-    for c in GIA_COMM_COLS:
-        if c not in comm.columns:
-            errors.append(f"На листе «Комиссии» нет столбца «{c}».")
-    for c in ["Комиссия", "Дата", "Начало", "Длительность, мин"]:
-        if c not in sess.columns:
-            errors.append(f"На листе «Заседания» нет столбца «{c}».")
+    errors += [f"На листе «Комиссии» нет столбца «{c}»." for c in GIA_COMM_COLS if c not in comm.columns]
+    errors += [f"На листе «Заседания» нет столбца «{c}»." for c in ("Комиссия", "Дата", "Начало")
+               if c not in sess.columns]
     if errors:
         return errors
-    c, s, p = _gia_normalize(comm, sess, _gia_params_from_df(sheets.get("Параметры")))
-    skipped = len(sess[sess["Комиссия"].astype(str).str.strip() != ""]) - len(s)
-    st.session_state.gia_comm, st.session_state.gia_sess, st.session_state.gia_params = c, s, p
-    _gia_commit(f"✅ Проект восстановлен: {c['Комиссия'].nunique()} комиссий, {int((s["Дата"] != "").sum())} заседаний с датой"
-                + (f" (пропущено строк с ошибкой в дате/времени: {skipped})" if skipped > 0 else ""))
+    c, s = _gia_normalize(comm, sess)
+    st.session_state.gia_comm, st.session_state.gia_sess = c, s
+    _gia_commit(f"✅ Проект восстановлен: комиссий – {c['Комиссия'].nunique()}, "
+                f"заседаний с датой – {int((s['Дата'] != '').sum())}")
     return []
 
 
@@ -1807,26 +1945,23 @@ def _gia_import_excel(file) -> list[str]:
 # Интерфейс вкладки
 # ---------------------------------------------------------------------
 GIA_TEXT_HELP = """ГЭК 1:
-Группа: в3743801/41401
-Председатель 1
 Иванов Иван Иванович
 Петрова Мария Сергеевна
+Сидоров Пётр Алексеевич
 
 ГЭК 2:
-Группа: з3743801/40401
-Председатель 2
+Кузнецова Анна Павловна
 Иванов Иван Иванович"""
 
 
-def _gia_color(v):
-    v = str(v)
-    if v.startswith("🟥"):
-        return "background-color:#f8d7da"
-    if v.startswith("🟦"):
-        return "background-color:#dbe9ff"
-    if v.startswith("⛔"):
-        return "background-color:#fff3cd"
-    return ""
+def _gia_add_row(comm_key: str):
+    c = st.session_state.get(comm_key)
+    if not c:
+        return
+    sess = st.session_state.gia_sess
+    new = {"ID": uuid.uuid4().hex[:8], "Комиссия": c, "Группа": "", "Студентов": 0, "Дата": "", "Начало": ""}
+    st.session_state.gia_sess = pd.concat([sess, pd.DataFrame([new])], ignore_index=True)
+    _gia_commit(f"Добавлена строка для {c}")
 
 
 def render_gia_tab():
@@ -1847,74 +1982,87 @@ def render_gia_tab():
     comms = _gia_commissions()
     members = _gia_members()
     sess = st.session_state.gia_sess
-    p = st.session_state.gia_params
 
-    # ---------- 1. Составы комиссий: одно поле ----------
-    with st.expander("👥 Составы комиссий", expanded=not comms):
+    # ---------- Шаг 1. Составы комиссий ----------
+    with st.expander("👥 Шаг 1. Составы комиссий", expanded=not comms):
         st.caption(
             "Вставьте все составы одним текстом. Каждая комиссия начинается со строки с двоеточием "
             "(«ГЭК 1:»), ниже – ФИО по одному в строке. Первый в списке – председатель. "
-            "Строка «Группа: …» необязательна: группы можно вписать и потом, в таблице заседаний. "
-            "Сохраняется само, как только вы щёлкнете мышью вне поля (или нажмёте Ctrl+Enter)."
+            "Потом нажмите «Применить составы»: таблица заседаний обновится сама – новые ГЭК добавятся, "
+            "удалённые из текста ГЭК исчезнут вместе с их заседаниями."
         )
         tkey = f"gia_text_{ver}"
-        st.text_area(
-            "Составы ГЭК", value=_gia_text_from_data(), key=tkey, height=320,
-            placeholder=GIA_TEXT_HELP, on_change=_gia_apply_text, args=(tkey,),
-        )
-        st.caption("Чтобы удалить комиссию, сотрите её блок из текста. Уже внесённые даты её заседаний "
-                   "не удалятся сами – их можно убрать в таблице ниже.")
-        if comms:
-            st.button("✔️ Применить составы", key=f"gia_apply_{ver}",
-                      on_click=_gia_apply_text, args=(tkey,))
+        st.text_area("Составы ГЭК", value=_gia_text_from_data(), key=tkey, height=320, placeholder=GIA_TEXT_HELP)
+        st.button("✔️ Применить составы", key=f"gia_apply_{ver}", type="primary",
+                  on_click=_gia_apply_text, args=(tkey,))
 
     if not comms:
-        st.info("Вставьте составы комиссий – после этого появятся таблица заседаний и матрица занятости.")
+        st.info("Вставьте составы комиссий и нажмите «Применить составы» – после этого появятся "
+                "таблица заседаний и матрица занятости.")
     else:
-        # ---------- 2. Заседания: председатели и даты ----------
-        st.markdown("#### 🗓 Заседания ГЭК: даты защит")
+        # ---------- Шаг 2. Заседания ----------
+        st.markdown("#### 🗓 Шаг 2. Заседания ГЭК: даты защит")
         st.caption(
-            "Впишите дату, время начала и длительность напротив председателя – матрица ниже обновится сразу "
-            "и покажет занятость этих людей во всех ГЭК. Если у ГЭК несколько дней защит, добавьте строку "
-            "внизу таблицы (знак «+») и выберите ГЭК. Удалить строку: отметьте её слева и нажмите значок корзины."
+            f"Заполните столбцы со значком 🟩: группу, количество студентов, дату и время начала. "
+            f"Длительность считается сама: {GIA_MIN_PER_STUDENT} мин на студента; окончание тоже. "
+            "Если у ГЭК несколько групп – добавьте строку кнопкой справа или знаком «+» под таблицей. "
+            "Удалить строку: отметьте её слева и нажмите значок корзины."
         )
-        orphan = sess[~sess["Комиссия"].isin(comms)]
-        if not orphan.empty:
-            st.warning("Есть заседания комиссий, которых больше нет в составах: "
-                       + ", ".join(sorted(orphan["Комиссия"].unique())))
-            if st.button("🗑 Удалить эти заседания", key=f"gia_orph_{ver}"):
-                st.session_state.gia_sess = sess[sess["Комиссия"].isin(comms)]
-                _gia_commit("Заседания удалённых комиссий убраны")
-                st.rerun()
+        a1, a2 = st.columns([3, 1])
+        akey = f"gia_add_comm_{ver}"
+        a1.selectbox("Добавить ещё одну группу для ГЭК", comms, key=akey)
+        a2.button("➕ Добавить строку", key=f"gia_add_btn_{ver}", on_click=_gia_add_row, args=(akey,),
+                  width="stretch")
 
         conf_all = _gia_all_conflicts(sess, members)
 
-        def _end(r):
-            return _gia_interval(r)[1].strftime("%H:%M") if r["Дата"] else ""
+        def _status(r):
+            if _gia_is_scheduled(r):
+                c = conf_all.get(r["ID"])
+                return "⚠️ " + "; ".join(c) if c else "✅ нет"
+            missing = [n for n, ok in (("кол-во студентов", int(r["Студентов"]) > 0), ("дату", r["Дата"]),
+                                       ("начало", r["Начало"])) if not ok]
+            return "" if len(missing) == 3 else "заполните: " + ", ".join(missing)
 
         view = pd.DataFrame({
             "ID": sess["ID"].values,
             "ГЭК": sess["Комиссия"].values,
             "Председатель": [_gia_chair(members, c) for c in sess["Комиссия"]],
             "Группа": sess["Группа"].values,
-            "Дата": [date.fromisoformat(d) if d else None for d in sess["Дата"]],
+            "Студентов": [int(n) if int(n) > 0 else None for n in sess["Студентов"]],
+            "Дата": pd.to_datetime(pd.Series([d or None for d in sess["Дата"]], dtype=object)),
             "Начало": [_gia_parse_time(t) for t in sess["Начало"]],
-            "Длительность, мин": sess["Длительность, мин"].astype(int).values,
-            "Окончание": [_end(r) for _, r in sess.iterrows()],
-            "Пересечения": ["⚠️ " + "; ".join(conf_all[i]) if conf_all.get(i) else ("✅ нет" if d else "")
-                            for i, d in zip(sess["ID"], sess["Дата"])],
+            "Длительность": [_gia_dur_label(int(n) * GIA_MIN_PER_STUDENT) if int(n) > 0 else ""
+                             for n in sess["Студентов"]],
+            "Окончание": [_gia_interval(r)[1].strftime("%H:%M") if _gia_is_scheduled(r) else ""
+                          for _, r in sess.iterrows()],
+            "Пересечения": [_status(r) for _, r in sess.iterrows()],
         })
+        view["Студентов"] = view["Студентов"].astype("Int64")
+
+        def _calc_style(col):
+            if col.name == "Пересечения":
+                return [f"background-color:#{GIA_RED}" if str(v).startswith("⚠️") else
+                        ("background-color:#fff3cd" if str(v).startswith("заполните") else "") for v in col]
+            if col.name in ("Председатель", "Длительность", "Окончание"):
+                return ["background-color:#f2f2f2"] * len(col)
+            return [""] * len(col)
+
+        styled = view.style.apply(_calc_style, axis=0)
         edited = st.data_editor(
-            view, key=f"gia_sess_editor_{ver}", hide_index=True, width="stretch", num_rows="dynamic",
+            styled, key=f"gia_sess_editor_{ver}", hide_index=True, width="stretch", num_rows="dynamic",
+            column_order=["ГЭК", "Председатель", "Группа", "Студентов", "Дата", "Начало",
+                          "Длительность", "Окончание", "Пересечения"],
             column_config={
                 "ID": None,
-                "ГЭК": st.column_config.SelectboxColumn("ГЭК", options=comms, required=True),
+                "ГЭК": st.column_config.SelectboxColumn("🟩 ГЭК", options=comms, required=True),
                 "Председатель": st.column_config.TextColumn("Председатель", disabled=True),
-                "Группа": st.column_config.TextColumn("Группа"),
-                "Дата": st.column_config.DateColumn("Дата", format="DD.MM.YYYY"),
-                "Начало": st.column_config.TimeColumn("Начало", format="HH:mm", step=60 * 30),
-                "Длительность, мин": st.column_config.NumberColumn("Длительность, мин", min_value=30,
-                                                                   max_value=600, step=30),
+                "Группа": st.column_config.TextColumn("🟩 Группа"),
+                "Студентов": st.column_config.NumberColumn("🟩 Кол-во студентов", min_value=1, max_value=200,
+                                                           step=1, format="%d"),
+                "Дата": st.column_config.DateColumn("🟩 Дата", format="DD.MM.YYYY"),
+                "Начало": st.column_config.TimeColumn("🟩 Начало", format="HH:mm", step=60 * 30),
+                "Длительность": st.column_config.TextColumn("Длительность", disabled=True),
                 "Окончание": st.column_config.TextColumn("Окончание", disabled=True),
                 "Пересечения": st.column_config.TextColumn("Пересечения", disabled=True, width="large"),
             },
@@ -1922,60 +2070,45 @@ def render_gia_tab():
         known = set(sess["ID"])
         new_rows = []
         for _, r in edited.iterrows():
-            rid = str(r["ID"]) if (not pd.isna(r["ID"]) and str(r["ID"]) in known) else uuid.uuid4().hex[:8]
-            d, t = r["Дата"], r["Начало"]
-            if isinstance(d, (pd.Timestamp, datetime)):
-                d = d.date()
+            rid = str(r["ID"]) if (not _gia_empty(r["ID"]) and str(r["ID"]) in known) else uuid.uuid4().hex[:8]
+            d = _gia_parse_date(r["Дата"])
+            t = _gia_parse_time(r["Начало"])
             new_rows.append({
                 "ID": rid,
-                "Комиссия": "" if pd.isna(r["ГЭК"]) else str(r["ГЭК"]),
-                "Дата": d.isoformat() if isinstance(d, date) else "",
-                "Начало": t.strftime("%H:%M") if isinstance(t, dtime) else GIA_DEFAULT_START,
-                "Длительность, мин": GIA_DEFAULT_DUR if pd.isna(r["Длительность, мин"]) else int(r["Длительность, мин"]),
-                "Группа": "" if pd.isna(r["Группа"]) else str(r["Группа"]),
+                "Комиссия": "" if _gia_empty(r["ГЭК"]) else str(r["ГЭК"]),
+                "Группа": "" if _gia_empty(r["Группа"]) else str(r["Группа"]),
+                "Студентов": _gia_parse_int(r["Студентов"]),
+                "Дата": d.isoformat() if d else "",
+                "Начало": t.strftime("%H:%M") if t else "",
             })
-        _, new_sess, _ = _gia_normalize(st.session_state.gia_comm, pd.DataFrame(new_rows, columns=GIA_SESS_COLS), p)
+        _, new_sess = _gia_normalize(st.session_state.gia_comm, pd.DataFrame(new_rows, columns=GIA_SESS_COLS))
         if not new_sess.astype(str).reset_index(drop=True).equals(sess[GIA_SESS_COLS].astype(str).reset_index(drop=True)):
             st.session_state.gia_sess = new_sess
-            _gia_commit("✅ Даты сохранены")
+            _gia_commit("✅ Сохранено")
             st.rerun()
 
         n_conf = sum(1 for v in conf_all.values() if v)
         if n_conf:
-            st.error(f"Заседаний с пересечениями: {n_conf}. Подробности – в столбце «Пересечения» и в матрице (🟥).")
+            st.error(f"Заседаний с пересечениями: {n_conf}. Подробности – в столбце «Пересечения» и в матрице.")
 
-        # ---------- 3. Матрица занятости (всегда открыта) ----------
+        # ---------- Матрица занятости ----------
         st.markdown("#### 🧮 Матрица занятости")
-        with st.expander("⚙️ Настройки матрицы", expanded=False):
-            m1, m2, m3, m4 = st.columns(4)
-            ms = m1.date_input("С", date.fromisoformat(p["start"]), format="DD.MM.YYYY", key=f"gia_ms_{ver}")
-            me = m2.date_input("По", date.fromisoformat(p["end"]), format="DD.MM.YYYY", key=f"gia_me_{ver}")
-            hf, ht = m3.slider("Часы", 6, 23, (p["hour_from"], p["hour_to"]), key=f"gia_h_{ver}")
-            step = m4.selectbox("Шаг", [30, 60], index=[30, 60].index(p["step"]) if p["step"] in (30, 60) else 0,
-                                format_func=_gia_dur_label, key=f"gia_step_{ver}")
-            o1, o2 = st.columns(2)
-            wk = o1.checkbox("Показывать выходные", p["weekends"], key=f"gia_wk_{ver}")
-            obd = o2.checkbox("Только дни, где есть защиты", p["only_busy_days"], key=f"gia_obd_{ver}")
-            new_p = {"start": ms.isoformat(), "end": me.isoformat(), "hour_from": hf, "hour_to": ht,
-                     "step": step, "weekends": wk, "only_busy_days": obd}
-            if new_p != {k: p[k] for k in new_p}:
-                st.session_state.gia_params = {**p, **new_p}
-                _gia_commit()
-                st.rerun()
-        st.caption("🟦 заседание ГЭК (группа и время) · ⛔ член этой ГЭК в это время занят в другой · "
-                   "🟥 пересечение: у ГЭК заседание, а её член занят в другой, или два заседания одной ГЭК")
-        mx = _gia_matrix(sess, members, p)
-        if _gia_dated(sess).empty:
-            st.info("Матрица заполнится, когда в таблице заседаний появится хотя бы одна дата.")
-            st.dataframe(pd.DataFrame(columns=[_gia_matrix_header(c, members) for c in comms]),
-                         hide_index=True, width="stretch")
-        elif mx.empty:
-            st.caption("В выбранном периоде нет слотов для показа – проверьте настройки матрицы.")
+        if _gia_scheduled(sess).empty:
+            st.info("Матрица построится сама, когда у заседания будут заполнены дата, начало и количество студентов.")
         else:
-            sty = mx.style.map(_gia_color) if hasattr(mx.style, "map") else mx.style.applymap(_gia_color)
+            mx, mask = _gia_matrix_view(sess, members)
+            _, _, step = _gia_grid(sess, members)
+            st.caption(f"Все рабочие дни с самой ранней по самую позднюю дату (выходные – только если в них есть защиты), 10:00–21:00, шаг {_gia_dur_label(step)}. "
+                       "Столбцы – председатели, первая строка – члены комиссии. "
+                       "Красным – пересечение: один человек в двух ГЭК одновременно.")
+
+            def _mx_style(df):
+                return mask.replace({"c": f"background-color:#{GIA_RED}", "s": "background-color:#e8f0fe",
+                                     "": ""})
+
+            sty = mx.style.apply(_mx_style, axis=None)
             st.dataframe(sty, width="stretch", height=min(40 + 35 * len(mx), 700))
 
-        # ---------- 4. По членам комиссий ----------
         with st.expander("👤 Расписание по членам комиссий", expanded=False):
             bp = _gia_by_person(sess, members)
             if bp.empty:
@@ -1984,7 +2117,7 @@ def render_gia_tab():
                 who = st.selectbox("Член комиссии", ["Все"] + sorted(bp["ФИО"].unique()), key=f"gia_who_{ver}")
                 st.dataframe(bp if who == "Все" else bp[bp["ФИО"] == who], hide_index=True, width="stretch")
 
-    # ---------- 5. Файл проекта ----------
+    # ---------- Файл проекта ----------
     st.markdown("#### 💾 Файл проекта")
     e1, e2 = st.columns(2)
     with e1:
@@ -1994,7 +2127,8 @@ def render_gia_tab():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width="stretch", key=f"gia_dl_{ver}",
         )
-        st.caption("В файле: составы, заседания, итог «ФИО – дата – время – группа», расписание по людям и матрица.")
+        st.caption("Первый лист – расписание ГЭК по образцу; дальше итог, расписание по людям "
+                   "и служебные листы «Комиссии» и «Заседания», по которым проект восстанавливается.")
     with e2:
         up = st.file_uploader("📂 Восстановить из файла проекта (.xlsx)", type=["xlsx"], key=f"gia_up_{ver}")
         if up is not None:
@@ -2512,4 +2646,3 @@ with tab5:
             st.session_state.mass_result = None
             st.session_state.mass_excel = None
             st.rerun()
-
